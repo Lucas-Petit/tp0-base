@@ -18,10 +18,12 @@ def generate_compose_config(num_clients):
                 'image': 'server:latest',
                 'entrypoint': 'python3 /main.py',
                 'environment': [
-                    'PYTHONUNBUFFERED=1',
-                    'LOGGING_LEVEL=DEBUG'
+                    'PYTHONUNBUFFERED=1'
                 ],
                 'networks': ['testing_net'],
+                'volumes': [
+                    './server/config.ini:/config.ini:ro'
+                ],
             }
         },
         'networks': {
@@ -43,11 +45,13 @@ def generate_compose_config(num_clients):
             'image': 'client:latest',
             'entrypoint': '/client',
             'environment': [
-                f'CLI_ID={i}',
-                'CLI_LOG_LEVEL=DEBUG'
+                f'CLI_ID={i}'
             ],
             'networks': ['testing_net'],
             'depends_on': ['server'],
+            'volumes': [
+                './client/config.yaml:/config.yaml:ro'
+            ],
         }
     
     return compose_config
