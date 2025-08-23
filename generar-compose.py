@@ -64,7 +64,7 @@ def main():
     output_file = sys.argv[1]
     try:
         num_clients = int(sys.argv[2])
-        if num_clients <= 0:
+        if num_clients < 0:
             raise ValueError("Number of clients must be positive")
     except ValueError as e:
         print(f"Error: Invalid number of clients. {e}")
