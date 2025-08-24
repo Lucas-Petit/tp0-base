@@ -2,6 +2,7 @@ package common
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"net"
 	"time"
@@ -51,10 +52,24 @@ func (c *Client) createClientSocket() error {
 }
 
 // StartClientLoop Send messages to the client until some time threshold is met
-func (c *Client) StartClientLoop() {
+func (c *Client) StartClientLoop(ctx context.Context) {
 	// There is an autoincremental msgID to identify every message sent
 	// Messages if the message amount threshold has not been surpassed
 	for msgID := 1; msgID <= c.config.LoopAmount; msgID++ {
+		// Check if context was cancelled (SIGTERM received)
+		select {
+		case <-ctx.Done():
+			log.Infof("action: client_shutdown | result: success | client_id: %v | msg: Graceful shutdown initiated", c.config.ID)
+			if c.conn != nil {
+				log.Infof("action: closing_connection | result: success | client_id: %v", c.config.ID)
+				c.conn.Close()
+			}
+			log.Infof("action: client_shutdown_completed | result: success | client_id: %v", c.config.ID)
+			return
+		default:
+			// Continue with normal operation
+		}
+
 		// Create the connection the server in every loop iteration. Send an
 		c.createClientSocket()
 
@@ -66,7 +81,10 @@ func (c *Client) StartClientLoop() {
 			msgID,
 		)
 		msg, err := bufio.NewReader(c.conn).ReadString('\n')
+		
+		log.Infof("action: closing_connection | result: success | client_id: %v", c.config.ID)
 		c.conn.Close()
+		c.conn = nil
 
 		if err != nil {
 			log.Errorf("action: receive_message | result: fail | client_id: %v | error: %v",
@@ -82,8 +100,15 @@ func (c *Client) StartClientLoop() {
 		)
 
 		// Wait a time between sending one message and the next one
-		time.Sleep(c.config.LoopPeriod)
-
+		// Check for cancellation during sleep
+		select {
+		case <-ctx.Done():
+			log.Infof("action: client_shutdown | result: success | client_id: %v | msg: Graceful shutdown initiated during sleep", c.config.ID)
+			log.Infof("action: client_shutdown_completed | result: success | client_id: %v", c.config.ID)
+			return
+		case <-time.After(c.config.LoopPeriod):
+			// Continue to next iteration
+		}
 	}
 	log.Infof("action: loop_finished | result: success | client_id: %v", c.config.ID)
 }

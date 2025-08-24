@@ -4,6 +4,8 @@ from configparser import ConfigParser
 from common.server import Server
 import logging
 import os
+import signal
+import sys
 
 
 def initialize_config():
@@ -49,6 +51,15 @@ def main():
 
     # Initialize server and start server loop
     server = Server(port, listen_backlog)
+    
+    # Set up signal handler for graceful shutdown
+    def signal_handler(sig, frame):
+        logging.info('action: sigterm_received | result: success | msg: Starting graceful shutdown')
+        server.stop()
+        sys.exit(0)
+    
+    signal.signal(signal.SIGTERM, signal_handler)
+    
     server.run()
 
 def initialize_log(logging_level):
