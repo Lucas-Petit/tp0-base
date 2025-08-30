@@ -1,5 +1,7 @@
 import socket
 import logging
+from .protocol import receive_message, send_message, Message, MessageType, Response
+from .utils import Bet, store_bets
 
 
 class Server:
@@ -22,6 +24,7 @@ class Server:
                     self._server_socket.settimeout(1.0)
                     client_sock = self.__accept_new_connection()
                     self.__handle_client_connection(client_sock)
+                    
                 except socket.timeout:
                     # This is expected, just continue the loop to check _running flag
                     continue
@@ -52,7 +55,7 @@ class Server:
 
     def __handle_client_connection(self, client_sock):
         """
-        Read message from a specific client socket and closes the socket
+        Handle lottery bet from a specific client socket and closes the socket
 
         If a problem arises in the communication with the client, the
         client socket will also be closed
@@ -60,11 +63,36 @@ class Server:
         addr = None
         try:
             addr = client_sock.getpeername()
-            # TODO: Modify the receive to avoid short-reads
-            msg = client_sock.recv(1024).rstrip().decode('utf-8')
-            logging.info(f'action: receive_message | result: success | ip: {addr[0]} | msg: {msg}')
-            # TODO: Modify the send to avoid short-writes
-            client_sock.send("{}\n".format(msg).encode('utf-8'))
+            
+            message = receive_message(client_sock)
+            if not message:
+                logging.error(f"action: receive_message | result: fail | ip: {addr[0]} | error: Failed to receive message")
+                self.__send_error_response(client_sock, "Failed to receive message")
+                return
+            
+            if message.type != MessageType.BET:
+                logging.error(f"action: receive_message | result: fail | ip: {addr[0]} | error: Invalid message type")
+                self.__send_error_response(client_sock, "Invalid message type")
+                return
+            
+            bet_data = message.data
+            logging.info(f'action: receive_message | result: success | ip: {addr[0]} | dni: {bet_data.document} | numero: {bet_data.number}')
+            
+            try:
+                store_bets([bet_data])
+                
+                logging.info(f"action: apuesta_almacenada | result: success | dni: {bet_data.document} | numero: {bet_data.number}")
+                
+                response = Response(success=True, message="Bet stored successfully")
+                response_message = Message(MessageType.RESPONSE, response)
+                
+                if not send_message(client_sock, response_message):
+                    logging.error(f"action: send_response | result: fail | ip: {addr[0]} | error: Failed to send response")
+                
+            except Exception as e:
+                logging.error(f"action: store_bet | result: fail | ip: {addr[0]} | dni: {bet_data.document if hasattr(bet_data, 'document') else 'unknown'} | error: {e}")
+                self.__send_error_response(client_sock, f"Failed to store bet: {e}")
+                
         except OSError as e:
             if addr:
                 logging.error(f"action: receive_message | result: fail | ip: {addr[0]} | error: {e}")
@@ -76,6 +104,15 @@ class Server:
             else:
                 logging.info("action: closing_client_connection | result: success")
             client_sock.close()
+    
+    def __send_error_response(self, client_sock, error_message):
+        """Send an error response to the client"""
+        try:
+            response = Response(success=False, message=error_message)
+            response_message = Message(MessageType.RESPONSE, response)
+            send_message(client_sock, response_message)
+        except Exception:
+            pass
 
     def __accept_new_connection(self):
         """

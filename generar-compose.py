@@ -38,14 +38,31 @@ def generate_compose_config(num_clients):
         }
     }
     
+    # Sample bet data for each agency
+    bet_data = [
+        {"NOMBRE": "Santiago Lionel", "APELLIDO": "Lorca", "DOCUMENTO": "30904465", "NACIMIENTO": "1999-03-17", "NUMERO": "7574"},
+        {"NOMBRE": "Maria Elena", "APELLIDO": "Gonzalez", "DOCUMENTO": "25123456", "NACIMIENTO": "1995-07-22", "NUMERO": "1234"},
+        {"NOMBRE": "Carlos Alberto", "APELLIDO": "Rodriguez", "DOCUMENTO": "32456789", "NACIMIENTO": "1988-11-15", "NUMERO": "5678"},
+        {"NOMBRE": "Ana Lucia", "APELLIDO": "Martinez", "DOCUMENTO": "28789012", "NACIMIENTO": "1992-04-08", "NUMERO": "9012"},
+        {"NOMBRE": "Pedro Jose", "APELLIDO": "Fernandez", "DOCUMENTO": "31234567", "NACIMIENTO": "1985-12-03", "NUMERO": "3456"}
+    ]
+    
     for i in range(1, num_clients + 1):
         client_name = f'client{i}'
+        
+        bet_info = bet_data[(i - 1) % len(bet_data)]
+        
         compose_config['services'][client_name] = {
             'container_name': client_name,
             'image': 'client:latest',
             'entrypoint': '/client',
             'environment': [
-                f'CLI_ID={i}'
+                f'CLI_ID={i}',
+                f'NOMBRE={bet_info["NOMBRE"]}',
+                f'APELLIDO={bet_info["APELLIDO"]}',
+                f'DOCUMENTO={bet_info["DOCUMENTO"]}',
+                f'NACIMIENTO={bet_info["NACIMIENTO"]}',
+                f'NUMERO={bet_info["NUMERO"]}'
             ],
             'networks': ['testing_net'],
             'depends_on': ['server'],

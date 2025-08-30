@@ -1,10 +1,9 @@
 package common
 
 import (
-	"bufio"
 	"context"
-	"fmt"
 	"net"
+	"os"
 	"time"
 
 	"github.com/op/go-logging"
@@ -12,7 +11,6 @@ import (
 
 var log = logging.MustGetLogger("log")
 
-// ClientConfig Configuration used by the client
 type ClientConfig struct {
 	ID            string
 	ServerAddress string
@@ -20,17 +18,34 @@ type ClientConfig struct {
 	LoopPeriod    time.Duration
 }
 
-// Client Entity that encapsulates how
+type BetData struct {
+	FirstName string
+	LastName  string
+	Document  string
+	Birthdate string
+	Number    string
+}
+
 type Client struct {
-	config ClientConfig
-	conn   net.Conn
+	config  ClientConfig
+	betData BetData
+	conn    net.Conn
 }
 
 // NewClient Initializes a new client receiving the configuration
-// as a parameter
+// as a parameter and reading bet data from environment variables
 func NewClient(config ClientConfig) *Client {
+	betData := BetData{
+		FirstName: os.Getenv("NOMBRE"),
+		LastName:  os.Getenv("APELLIDO"),
+		Document:  os.Getenv("DOCUMENTO"),
+		Birthdate: os.Getenv("NACIMIENTO"),
+		Number:    os.Getenv("NUMERO"),
+	}
+	
 	client := &Client{
-		config: config,
+		config:  config,
+		betData: betData,
 	}
 	return client
 }
@@ -46,69 +61,86 @@ func (c *Client) createClientSocket() error {
 			c.config.ID,
 			err,
 		)
+		return err
 	}
 	c.conn = conn
 	return nil
 }
 
-// StartClientLoop Send messages to the client until some time threshold is met
+// StartClientLoop loops sending bets
 func (c *Client) StartClientLoop(ctx context.Context) {
-	// There is an autoincremental msgID to identify every message sent
-	// Messages if the message amount threshold has not been surpassed
-	for msgID := 1; msgID <= c.config.LoopAmount; msgID++ {
+	for i := 0; i < c.config.LoopAmount; i++ {
 		// Check if context was cancelled (SIGTERM received)
 		select {
 		case <-ctx.Done():
 			log.Infof("action: client_shutdown | result: success | client_id: %v | msg: Graceful shutdown initiated", c.config.ID)
-			if c.conn != nil {
-				log.Infof("action: closing_connection | result: success | client_id: %v", c.config.ID)
-				c.conn.Close()
-			}
 			log.Infof("action: client_shutdown_completed | result: success | client_id: %v", c.config.ID)
 			return
 		default:
 			// Continue with normal operation
 		}
 
-		// Create the connection the server in every loop iteration. Send an
-		c.createClientSocket()
-
-		// TODO: Modify the send to avoid short-write
-		fmt.Fprintf(
-			c.conn,
-			"[CLIENT %v] Message N°%v\n",
-			c.config.ID,
-			msgID,
-		)
-		msg, err := bufio.NewReader(c.conn).ReadString('\n')
+		if err := c.createClientSocket(); err != nil {
+			return
+		}
+		
+		c.sendSingleBet()
 		
 		log.Infof("action: closing_connection | result: success | client_id: %v", c.config.ID)
 		c.conn.Close()
 		c.conn = nil
-
-		if err != nil {
-			log.Errorf("action: receive_message | result: fail | client_id: %v | error: %v",
-				c.config.ID,
-				err,
-			)
-			return
-		}
-
-		log.Infof("action: receive_message | result: success | client_id: %v | msg: %v",
-			c.config.ID,
-			msg,
-		)
-
-		// Wait a time between sending one message and the next one
-		// Check for cancellation during sleep
-		select {
-		case <-ctx.Done():
-			log.Infof("action: client_shutdown | result: success | client_id: %v | msg: Graceful shutdown initiated during sleep", c.config.ID)
-			log.Infof("action: client_shutdown_completed | result: success | client_id: %v", c.config.ID)
-			return
-		case <-time.After(c.config.LoopPeriod):
-			// Continue to next iteration
+		
+		if i < c.config.LoopAmount-1 {
+			select {
+			case <-ctx.Done():
+				log.Infof("action: client_shutdown | result: success | client_id: %v | msg: Graceful shutdown initiated", c.config.ID)
+				log.Infof("action: client_shutdown_completed | result: success | client_id: %v", c.config.ID)
+				return
+			case <-time.After(c.config.LoopPeriod):
+				// Continue to next iteration
+			}
 		}
 	}
-	log.Infof("action: loop_finished | result: success | client_id: %v", c.config.ID)
+}
+
+// sendSingleBet sends a single bet to the server
+func (c *Client) sendSingleBet() {
+	bet := Bet{
+		Agency:    c.config.ID,
+		FirstName: c.betData.FirstName,
+		LastName:  c.betData.LastName,
+		Document:  c.betData.Document,
+		Birthdate: c.betData.Birthdate,
+		Number:    c.betData.Number,
+	}
+
+	message := Message{
+		Type: BetMessage,
+		Data: bet,
+	}
+
+	if err := SendMessage(c.conn, message); err != nil {
+		log.Errorf("action: send_bet | result: fail | client_id: %v | error: %v", c.config.ID, err)
+		return
+	}
+
+	response, err := ReceiveMessage(c.conn)
+	if err != nil {
+		log.Errorf("action: receive_response | result: fail | client_id: %v | error: %v", c.config.ID, err)
+		return
+	}
+
+	responseData, ok := response.Data.(*Response)
+	if !ok {
+		log.Errorf("action: parse_response | result: fail | client_id: %v | error: invalid response type", c.config.ID)
+		return
+	}
+
+	if responseData.Success {
+		log.Infof("action: apuesta_enviada | result: success | dni: %s | numero: %s", 
+			c.betData.Document, c.betData.Number)
+	} else {
+		log.Errorf("action: apuesta_enviada | result: fail | dni: %s | numero: %s | error: %s", 
+			c.betData.Document, c.betData.Number, responseData.Message)
+	}
 }
