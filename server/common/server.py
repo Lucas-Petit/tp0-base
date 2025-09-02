@@ -1,6 +1,7 @@
 import glob
 import socket
 import logging
+import threading
 from .protocol import BATCH, FINISHED_NOTIFICATION, WINNERS_QUERY, WINNERS_RESPONSE, Bet, WinnersResponse, receive_message, send_message, Message, RESPONSE, Response
 from .utils import has_won, load_bets, store_bets
 
@@ -16,8 +17,8 @@ class Server:
         self._finished_agencies = set()
         self._lottery_completed = False
         self._total_agencies = self._count_agency_files()
-        self._pending_winner_queries = []
         self._all_bets = []
+        self._lock = threading.Lock()
 
     def _count_agency_files(self):
         """
@@ -40,7 +41,9 @@ class Server:
             try:
                 client_sock = self.__accept_new_connection()
                 self._client_sockets.append(client_sock)
-                self.__handle_client_connection(client_sock)
+                thread = threading.Thread(target=self.__handle_client_connection, args=(client_sock,))
+                thread.daemon = True
+                thread.start()
             except OSError as e:
                 logging.error(f"action: accept_connections | result: fail | error: {e}")
     
@@ -115,7 +118,8 @@ class Server:
                 )
                 bets.append(bet)
             
-            store_bets(bets)
+            with self._lock:
+                store_bets(bets)
             logging.info(f"action: apuesta_recibida | result: success | cantidad: {bet_count}")
             
             response = Response(success=True, message=f"Batch of {bet_count} bets stored successfully")
@@ -136,15 +140,20 @@ class Server:
         logging.info(f'action: receive_finished_notification | result: success | ip: {addr[0]} | agency: {agency}')
 
         try:
-            if agency not in self._finished_agencies:
-                self._finished_agencies.add(agency)
-                logging.info(f"action: agency_finished | result: success | agency: {agency} | finished_count: {len(self._finished_agencies)}")
-                
-                if len(self._finished_agencies) >= self._total_agencies and not self._lottery_completed:
-                    self.__perform_lottery()
-            else:
-                logging.info(f"action: agency_already_finished | result: success | agency: {agency} | finished_count: {len(self._finished_agencies)}")
+            should_perform_lottery = False
+            with self._lock:
+                if agency not in self._finished_agencies:
+                    self._finished_agencies.add(agency)
+                    logging.info(f"action: agency_finished | result: success | agency: {agency} | finished_count: {len(self._finished_agencies)}")
+                    
+                    if len(self._finished_agencies) >= self._total_agencies and not self._lottery_completed:
+                        should_perform_lottery = True
+                else:
+                    logging.info(f"action: agency_already_finished | result: success | agency: {agency} | finished_count: {len(self._finished_agencies)}")
             
+            if should_perform_lottery:
+                self.__perform_lottery()            
+
             response = Response(success=True, message=f"Agency {agency} finished notification received")
             response_message = Message(RESPONSE, response)
             
@@ -163,7 +172,9 @@ class Server:
         logging.info(f'action: receive_winners_query | result: success | ip: {addr[0]} | agency: {agency}')        
 
         try:
-            if not self._lottery_completed:
+            with self._lock:
+                lottery_completed = self._lottery_completed
+            if not lottery_completed:
                 response = Response(success=False, message="Lottery not completed yet, please try again")
                 response_message = Message(RESPONSE, response)
                 
@@ -190,9 +201,15 @@ class Server:
     def __perform_lottery(self):
         """Perform the lottery when all agencies have finished"""
         try:
-            logging.info("action: sorteo | result: success")
-            self._lottery_completed = True
-            self._all_bets = list(load_bets())
+            all_bets = list(load_bets())
+            
+            with self._lock:
+                if not self._lottery_completed:
+                    self._lottery_completed = True
+                    self._all_bets = all_bets
+                    logging.info("action: sorteo | result: success")
+                else:
+                    logging.info("action: sorteo | result: already_completed")
 
         except Exception as e:
             logging.error(f"action: sorteo | result: fail | error: {e}")
@@ -201,14 +218,15 @@ class Server:
         """Get list of winning DNI numbers for a specific agency"""
         winners = []
         try:
-            if not self._all_bets:
-                logging.error(f"action: get_winners_for_agency | result: fail | agency: {agency} | error: No bets loaded")
-                return winners
+            with self._lock:
+                if not self._lottery_completed or not self._all_bets:
+                    logging.error(f"action: get_winners_for_agency | result: fail | agency: {agency} | error: No bets loaded")
+                    return winners
 
-            agency_int = int(agency)
-            for bet in self._all_bets:
-                if bet.agency == agency_int and has_won(bet):
-                    winners.append(bet.document)
+                agency_int = int(agency)
+                for bet in self._all_bets:
+                    if bet.agency == agency_int and has_won(bet):
+                        winners.append(bet.document)
             
             logging.info(f"action: get_winners_for_agency | result: success | agency: {agency} | winners_found: {len(winners)}")
             
