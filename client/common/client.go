@@ -1,7 +1,6 @@
 package common
 
 import (
-	"context"
 	"net"
 	"os"
 	"time"
@@ -68,12 +67,16 @@ func (c *Client) createClientSocket() error {
 }
 
 // StartClientLoop loops sending bets
-func (c *Client) StartClientLoop(ctx context.Context) {
+func (c *Client) StartClientLoop(sigChan <-chan os.Signal) {
 	for i := 0; i < c.config.LoopAmount; i++ {
-		// Check if context was cancelled (SIGTERM received)
+		// Check if SIGTERM was received
 		select {
-		case <-ctx.Done():
-			log.Infof("action: client_shutdown | result: success | client_id: %v | msg: Graceful shutdown initiated", c.config.ID)
+		case sig := <-sigChan:
+			log.Infof("action: signal_received | result: success | signal: %v | client_id: %v | msg: Starting graceful shutdown", sig, c.config.ID)
+			if c.conn != nil {
+				log.Infof("action: closing_connection | result: success | client_id: %v", c.config.ID)
+				c.conn.Close()
+			}
 			log.Infof("action: client_shutdown_completed | result: success | client_id: %v", c.config.ID)
 			return
 		default:
@@ -92,8 +95,8 @@ func (c *Client) StartClientLoop(ctx context.Context) {
 		
 		if i < c.config.LoopAmount-1 {
 			select {
-			case <-ctx.Done():
-				log.Infof("action: client_shutdown | result: success | client_id: %v | msg: Graceful shutdown initiated", c.config.ID)
+			case sig := <-sigChan:
+				log.Infof("action: signal_received | result: success | signal: %v | client_id: %v | msg: Graceful shutdown during sleep", sig, c.config.ID)
 				log.Infof("action: client_shutdown_completed | result: success | client_id: %v", c.config.ID)
 				return
 			case <-time.After(c.config.LoopPeriod):
