@@ -1,57 +1,38 @@
 import socket
 import logging
-from .protocol import receive_message, send_message, Message, MessageType, Response
-from .utils import Bet, store_bets
+from .protocol import receive_message, send_message, Message, BET, RESPONSE, Response
+from .utils import store_bets
 
 
 class Server:
     def __init__(self, port, listen_backlog):
         # Initialize server socket
         self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._server_socket.bind(('', port))
         self._server_socket.listen(listen_backlog)
-        self._running = True
+        self._client_sockets = []
 
     def run(self):
         """
         Server main loop that gracefully handles shutdown signals
         """
-        try:
-            while self._running:
-                try:
-                    # Set a timeout to allow periodic checking of _running flag
-                    self._server_socket.settimeout(1.0)
-                    client_sock = self.__accept_new_connection()
-                    self.__handle_client_connection(client_sock)
-                    
-                except socket.timeout:
-                    # This is expected, just continue the loop to check _running flag
-                    continue
-                except OSError as e:
-                    if self._running:
-                        logging.error(f"action: accept_connections | result: fail | error: {e}")
-                    else:
-                        # Server is shutting down, this is expected
-                        break
-        finally:
-            self._cleanup()
+        while True:
+            try:
+                client_sock = self.__accept_new_connection()
+                self._client_sockets.append(client_sock)
+                self.__handle_client_connection(client_sock)
+            except OSError as e:
+                logging.error(f"action: accept_connections | result: fail | error: {e}")
     
     def stop(self):
         """
         Gracefully stop the server
         """
-        logging.info("action: server_shutdown_started | result: success | msg: Stopping server")
-        self._running = False
-        
-    def _cleanup(self):
-        """
-        Clean up server resources
-        """
-        if hasattr(self, '_server_socket'):
-            logging.info("action: closing_server_socket | result: success | msg: Server socket closed")
-            self._server_socket.close()
-        logging.info("action: server_shutdown_completed | result: success | msg: Server shutdown completed")
+        for sock in self._client_sockets:
+            sock.close()
+        self._client_sockets = []
+        self._server_socket.close()
+        logging.info("action: server_shutdown_finished | result: success | msg: Stopping server")
 
     def __handle_client_connection(self, client_sock):
         """
@@ -70,7 +51,7 @@ class Server:
                 self.__send_error_response(client_sock, "Failed to receive message")
                 return
             
-            if message.type != MessageType.BET:
+            if message.type != BET:
                 logging.error(f"action: receive_message | result: fail | ip: {addr[0]} | error: Invalid message type")
                 self.__send_error_response(client_sock, "Invalid message type")
                 return
@@ -79,12 +60,22 @@ class Server:
             logging.info(f'action: receive_message | result: success | ip: {addr[0]} | dni: {bet_data.document} | numero: {bet_data.number}')
             
             try:
-                store_bets([bet_data])
+                from .utils import Bet
+                bet_utils = Bet(
+                    agency=bet_data.agency,
+                    first_name=bet_data.first_name,
+                    last_name=bet_data.last_name,
+                    document=bet_data.document,
+                    birthdate=bet_data.birthdate,
+                    number=bet_data.number
+                )
+                
+                store_bets([bet_utils])
                 
                 logging.info(f"action: apuesta_almacenada | result: success | dni: {bet_data.document} | numero: {bet_data.number}")
                 
                 response = Response(success=True, message="Bet stored successfully")
-                response_message = Message(MessageType.RESPONSE, response)
+                response_message = Message(RESPONSE, response)
                 
                 if not send_message(client_sock, response_message):
                     logging.error(f"action: send_response | result: fail | ip: {addr[0]} | error: Failed to send response")
@@ -109,7 +100,7 @@ class Server:
         """Send an error response to the client"""
         try:
             response = Response(success=False, message=error_message)
-            response_message = Message(MessageType.RESPONSE, response)
+            response_message = Message(RESPONSE, response)
             send_message(client_sock, response_message)
         except Exception:
             pass

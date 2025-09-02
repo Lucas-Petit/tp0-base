@@ -7,15 +7,13 @@ import (
 	"strings"
 )
 
-type MessageType string
-
 const (
-	BetMessage     MessageType = "BET"
-	ResponseMessage MessageType = "RESPONSE"
+	BET      = 1
+	RESPONSE = 2
 )
 
 type Message struct {
-	Type MessageType
+	Type int
 	Data interface{}
 }
 
@@ -33,36 +31,31 @@ type Response struct {
 	Message string
 }
 
-func SerializeBet(bet Bet) string {
-	return fmt.Sprintf("%s|%s|%s|%s|%s|%s", 
+func intToBytes(value int, size int) []byte {
+	bytes := make([]byte, size)
+	for i := 0; i < size; i++ {
+		bytes[i] = byte((value >> (i * 8)) & 0xFF)
+	}
+	return bytes
+}
+
+func bytesToInt(bytes []byte) int {
+	result := 0
+	for i := 0; i < len(bytes); i++ {
+		result |= int(bytes[i]) << (i * 8)
+	}
+	return result
+}
+
+func SerializeBet(bet Bet) []byte {
+	data := fmt.Sprintf("%s|%s|%s|%s|%s|%s", 
 		bet.Agency, bet.FirstName, bet.LastName, bet.Document, bet.Birthdate, bet.Number)
+	return []byte(data)
 }
 
-func DeserializeBet(data string) (*Bet, error) {
-	parts := strings.Split(data, "|")
-	if len(parts) != 6 {
-		return nil, fmt.Errorf("invalid bet format")
-	}
-	return &Bet{
-		Agency:    parts[0],
-		FirstName: parts[1],
-		LastName:  parts[2],
-		Document:  parts[3],
-		Birthdate: parts[4],
-		Number:    parts[5],
-	}, nil
-}
-
-func SerializeResponse(resp Response) string {
-	successStr := "false"
-	if resp.Success {
-		successStr = "true"
-	}
-	return fmt.Sprintf("%s|%s", successStr, resp.Message)
-}
-
-func DeserializeResponse(data string) (*Response, error) {
-	parts := strings.Split(data, "|")
+func DeserializeResponse(data []byte) (*Response, error) {
+	dataStr := string(data)
+	parts := strings.Split(dataStr, "|")
 	if len(parts) != 2 {
 		return nil, fmt.Errorf("invalid response format")
 	}
@@ -73,36 +66,30 @@ func DeserializeResponse(data string) (*Response, error) {
 	}, nil
 }
 
-// SendMessage sends a message over a connection using custom binary protocol
 func SendMessage(conn net.Conn, msg Message) error {
-	var payload string
-	
-	switch msg.Type {
-	case BetMessage:
-		if bet, ok := msg.Data.(Bet); ok {
-			payload = SerializeBet(bet)
-		} else {
-			return fmt.Errorf("invalid bet data")
-		}
-	case ResponseMessage:
-		if resp, ok := msg.Data.(Response); ok {
-			payload = SerializeResponse(resp)
-		} else {
-			return fmt.Errorf("invalid response data")
-		}
-	default:
-		return fmt.Errorf("unknown message type")
+	if msg.Type != BET {
+		return fmt.Errorf("client can only send BET messages")
 	}
 	
-	// Format: [TYPE___][LENGTH][PAYLOAD]\n
-	msgType := fmt.Sprintf("%-8s", string(msg.Type))
-	length := fmt.Sprintf("%010d", len(payload))
-	fullMessage := msgType + length + payload + "\n"
+	bet, ok := msg.Data.(Bet)
+	if !ok {
+		return fmt.Errorf("invalid bet data")
+	}
+	
+	payload := SerializeBet(bet)
+	
+	header := make([]byte, 5)
+	header[0] = byte(msg.Type)
+	
+	dataLength := len(payload)
+	lengthBytes := intToBytes(dataLength, 4)
+	copy(header[1:5], lengthBytes)
+	
+	fullMessage := append(header, payload...)
 	
 	totalWritten := 0
-	messageBytes := []byte(fullMessage)
-	for totalWritten < len(messageBytes) {
-		n, err := conn.Write(messageBytes[totalWritten:])
+	for totalWritten < len(fullMessage) {
+		n, err := conn.Write(fullMessage[totalWritten:])
 		if err != nil {
 			return fmt.Errorf("failed to write message: %v", err)
 		}
@@ -112,76 +99,39 @@ func SendMessage(conn net.Conn, msg Message) error {
 	return nil
 }
 
-// ReceiveMessage receives a message from a connection using custom binary protocol
 func ReceiveMessage(conn net.Conn) (*Message, error) {
-	typeBytes := make([]byte, 8)
-	totalRead := 0
-	for totalRead < 8 {
-		n, err := conn.Read(typeBytes[totalRead:])
-		if err != nil {
-			if err == io.EOF {
-				return nil, fmt.Errorf("connection closed")
-			}
-			return nil, fmt.Errorf("failed to read message type: %v", err)
+	typeBytes := make([]byte, 1)
+	_, err := io.ReadFull(conn, typeBytes)
+	if err != nil {
+		if err == io.EOF {
+			return nil, fmt.Errorf("connection closed")
 		}
-		totalRead += n
+		return nil, fmt.Errorf("failed to read message type: %v", err)
 	}
 	
-	msgType := MessageType(strings.TrimSpace(string(typeBytes)))
+	messageType := int(typeBytes[0])
 	
-	lengthBytes := make([]byte, 10)
-	totalRead = 0
-	for totalRead < 10 {
-		n, err := conn.Read(lengthBytes[totalRead:])
-		if err != nil {
-			if err == io.EOF {
-				return nil, fmt.Errorf("connection closed")
-			}
-			return nil, fmt.Errorf("failed to read length: %v", err)
-		}
-		totalRead += n
+	lengthBytes := make([]byte, 4)
+	_, err = io.ReadFull(conn, lengthBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read length: %v", err)
 	}
 	
-	var payloadLength int
-	if _, err := fmt.Sscanf(string(lengthBytes), "%010d", &payloadLength); err != nil {
-		return nil, fmt.Errorf("failed to parse payload length: %v", err)
+	dataLength := bytesToInt(lengthBytes)
+	
+	payload := make([]byte, dataLength)
+	_, err = io.ReadFull(conn, payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read payload: %v", err)
 	}
 	
-	payloadBytes := make([]byte, payloadLength+1)
-	totalRead = 0
-	for totalRead < payloadLength+1 {
-		n, err := conn.Read(payloadBytes[totalRead:])
-		if err != nil {
-			if err == io.EOF {
-				return nil, fmt.Errorf("connection closed while reading payload")
-			}
-			return nil, fmt.Errorf("failed to read payload: %v", err)
-		}
-		totalRead += n
-	}
-	
-	payload := string(payloadBytes[:payloadLength])
-	
-	var data interface{}
-	var err error
-	
-	switch msgType {
-	case BetMessage:
-		data, err = DeserializeBet(payload)
-		if err != nil {
-			return nil, fmt.Errorf("failed to deserialize bet: %v", err)
-		}
-	case ResponseMessage:
-		data, err = DeserializeResponse(payload)
+	if messageType == RESPONSE {
+		data, err := DeserializeResponse(payload)
 		if err != nil {
 			return nil, fmt.Errorf("failed to deserialize response: %v", err)
 		}
-	default:
-		return nil, fmt.Errorf("unknown message type: %s", msgType)
+		return &Message{Type: messageType, Data: *data}, nil
 	}
 	
-	return &Message{
-		Type: msgType,
-		Data: data,
-	}, nil
+	return nil, fmt.Errorf("unexpected message type: %d", messageType)
 }

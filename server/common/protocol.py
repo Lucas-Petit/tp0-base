@@ -1,10 +1,9 @@
 import socket
-from typing import Any, Optional
+from typing import Optional
 
 
-class MessageType:
-    BET = "BET"
-    RESPONSE = "RESPONSE"
+BET = 1
+RESPONSE = 2
 
 
 class Bet:
@@ -25,51 +24,34 @@ class Response:
 
 
 class Message:
-    def __init__(self, msg_type: str, data: Any):
+    def __init__(self, msg_type: int, data):
         self.type = msg_type
         self.data = data
 
 
-def serialize_bet(bet: Bet) -> str:
-    """Convert a bet to our custom protocol format"""
-    return f"{bet.agency}|{bet.first_name}|{bet.last_name}|{bet.document}|{bet.birthdate}|{bet.number}"
-
-
-def deserialize_bet(data: str) -> Bet:
-    """Convert our custom protocol format to a bet"""
-    parts = data.split("|")
+def deserialize_bet(data: bytes) -> Bet:
+    """Convert binary data to a bet"""
+    data_str = data.decode('utf-8')
+    parts = data_str.split("|")
     if len(parts) != 6:
         raise ValueError("Invalid bet format")
     return Bet(parts[0], parts[1], parts[2], parts[3], parts[4], parts[5])
 
 
-def serialize_response(response: Response) -> str:
-    """Convert a response to our custom protocol format"""
+def serialize_response(response: Response) -> bytes:
+    """Convert a response to binary format"""
     success_str = "true" if response.success else "false"
-    return f"{success_str}|{response.message}"
-
-
-def deserialize_response(data: str) -> Response:
-    """Convert our custom protocol format to a response"""
-    parts = data.split("|")
-    if len(parts) != 2:
-        raise ValueError("Invalid response format")
-    success = parts[0] == "true"
-    return Response(success, parts[1])
+    data_str = f"{success_str}|{response.message}"
+    return data_str.encode('utf-8')
 
 
 def send_message(conn: socket.socket, message: Message) -> bool:
     """
-    Send a message over a connection using custom binary protocol.
+    Send a message using manual binary protocol: [1 byte type][4 bytes length][payload]
     Returns True if successful, False otherwise.
     """
     try:
-        if message.type == MessageType.BET:
-            if isinstance(message.data, Bet):
-                payload = serialize_bet(message.data)
-            else:
-                return False
-        elif message.type == MessageType.RESPONSE:
+        if message.type == RESPONSE:
             if isinstance(message.data, Response):
                 payload = serialize_response(message.data)
             else:
@@ -77,10 +59,12 @@ def send_message(conn: socket.socket, message: Message) -> bool:
         else:
             return False
         
-        # Format: [TYPE___][LENGTH][PAYLOAD]\n
-        msg_type = f"{message.type:<8}"
-        length = f"{len(payload):010d}"
-        full_message = (msg_type + length + payload + "\n").encode('utf-8')
+        type_byte = message.type.to_bytes(1, byteorder='little')
+        
+        data_length = len(payload)
+        length_bytes = data_length.to_bytes(4, byteorder='little')
+        
+        full_message = type_byte + length_bytes + payload
         
         total_sent = 0
         while total_sent < len(full_message):
@@ -96,45 +80,40 @@ def send_message(conn: socket.socket, message: Message) -> bool:
 
 def receive_message(conn: socket.socket) -> Optional[Message]:
     """
-    Receive a message from a connection using custom binary protocol.
+    Receive a message using manual binary protocol: [1 byte type][4 bytes length][payload]
     Returns Message if successful, None otherwise.
     """
     try:
         type_data = b''
-        while len(type_data) < 8:
-            chunk = conn.recv(8 - len(type_data))
+        while len(type_data) < 1:
+            chunk = conn.recv(1 - len(type_data))
             if not chunk:
                 return None
             type_data += chunk
         
-        msg_type = type_data.decode('utf-8').strip()
+        message_type = int.from_bytes(type_data, byteorder='little')
         
         length_data = b''
-        while len(length_data) < 10:
-            chunk = conn.recv(10 - len(length_data))
+        while len(length_data) < 4:
+            chunk = conn.recv(4 - len(length_data))
             if not chunk:
                 return None
             length_data += chunk
         
-        payload_length = int(length_data.decode('utf-8'))
+        data_length = int.from_bytes(length_data, byteorder='little')
         
-        payload_data = b''
-        while len(payload_data) < payload_length + 1:
-            chunk = conn.recv((payload_length + 1) - len(payload_data))
+        payload = b''
+        while len(payload) < data_length:
+            chunk = conn.recv(data_length - len(payload))
             if not chunk:
                 return None
-            payload_data += chunk
+            payload += chunk
         
-        payload = payload_data[:-1].decode('utf-8')
-        
-        if msg_type == MessageType.BET:
+        if message_type == BET:
             data = deserialize_bet(payload)
-        elif msg_type == MessageType.RESPONSE:
-            data = deserialize_response(payload)
         else:
             return None
-        
-        return Message(msg_type, data)
-        
+            
+        return Message(message_type, data)
     except Exception:
         return None

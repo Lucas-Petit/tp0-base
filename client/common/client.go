@@ -118,7 +118,7 @@ func (c *Client) sendSingleBet() {
 	}
 
 	message := Message{
-		Type: BetMessage,
+		Type: BET,
 		Data: bet,
 	}
 
@@ -133,7 +133,7 @@ func (c *Client) sendSingleBet() {
 		return
 	}
 
-	responseData, ok := response.Data.(*Response)
+	responseData, ok := response.Data.(Response)
 	if !ok {
 		log.Errorf("action: parse_response | result: fail | client_id: %v | error: invalid response type", c.config.ID)
 		return

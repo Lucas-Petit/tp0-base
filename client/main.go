@@ -107,7 +107,7 @@ func main() {
 
 	// Set up signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
+	signal.Notify(sigChan, syscall.SIGTERM)
 
 	clientConfig := common.ClientConfig{
 		ServerAddress: v.GetString("server.address"),
