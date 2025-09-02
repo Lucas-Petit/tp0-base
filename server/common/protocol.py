@@ -2,7 +2,7 @@ import socket
 from typing import Optional
 
 
-BET = 1
+BATCH = 1
 RESPONSE = 2
 
 
@@ -22,6 +22,11 @@ class Response:
         self.success = success
         self.message = message
 
+class Batch:
+    def __init__(self, agency: str, bets: list[Bet]):
+        self.agency = agency
+        self.bets = bets
+
 
 class Message:
     def __init__(self, msg_type: int, data):
@@ -29,13 +34,31 @@ class Message:
         self.data = data
 
 
-def deserialize_bet(data: bytes) -> Bet:
-    """Convert binary data to a bet"""
-    data_str = data.decode('utf-8')
-    parts = data_str.split("|")
+def deserialize_bet(data: str) -> Bet:
+    """Convert string data to a bet"""
+    parts = data.split("|")
     if len(parts) != 6:
         raise ValueError("Invalid bet format")
     return Bet(parts[0], parts[1], parts[2], parts[3], parts[4], parts[5])
+
+def deserialize_batch(data: bytes) -> Batch:
+    """Convert binary data to a batch"""
+    data_str = data.decode('utf-8')
+    parts = data_str.split("||")
+    if len(parts) != 2:
+        raise ValueError("Invalid batch format")
+    
+    agency = parts[0]
+    bets_data = parts[1]
+    
+    bets = []
+    if bets_data:
+        bet_strings = bets_data.split(";;")
+        for bet_str in bet_strings:
+            bet = deserialize_bet(bet_str)
+            bets.append(bet)
+    
+    return Batch(agency, bets)
 
 
 def serialize_response(response: Response) -> bytes:
@@ -108,12 +131,11 @@ def receive_message(conn: socket.socket) -> Optional[Message]:
             if not chunk:
                 return None
             payload += chunk
-        
-        if message_type == BET:
-            data = deserialize_bet(payload)
+
+        if message_type == BATCH:
+            data = deserialize_batch(payload)
         else:
             return None
-            
         return Message(message_type, data)
     except Exception:
         return None

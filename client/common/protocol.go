@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	BET      = 1
+	BATCH    = 1
 	RESPONSE = 2
 )
 
@@ -24,6 +24,11 @@ type Bet struct {
 	Document  string
 	Birthdate string
 	Number    string
+}
+
+type Batch struct {
+	Agency string
+	Bets   []Bet
 }
 
 type Response struct {
@@ -53,6 +58,15 @@ func SerializeBet(bet Bet) []byte {
 	return []byte(data)
 }
 
+func SerializeBatch(batch Batch) []byte {
+	var betStrings []string
+	for _, bet := range batch.Bets {
+		betStrings = append(betStrings, string(SerializeBet(bet)))
+	}
+	data := fmt.Sprintf("%s||%s", batch.Agency, strings.Join(betStrings, ";;"))
+	return []byte(data)
+}
+
 func DeserializeResponse(data []byte) (*Response, error) {
 	dataStr := string(data)
 	parts := strings.Split(dataStr, "|")
@@ -67,16 +81,16 @@ func DeserializeResponse(data []byte) (*Response, error) {
 }
 
 func SendMessage(conn net.Conn, msg Message) error {
-	if msg.Type != BET {
-		return fmt.Errorf("client can only send BET messages")
+	if msg.Type != BATCH {
+		return fmt.Errorf("client can only send BATCH messages")
 	}
-	
-	bet, ok := msg.Data.(Bet)
+
+	batch, ok := msg.Data.(Batch)
 	if !ok {
-		return fmt.Errorf("invalid bet data")
+		return fmt.Errorf("invalid batch data")
 	}
-	
-	payload := SerializeBet(bet)
+
+	payload := SerializeBatch(batch)
 	
 	header := make([]byte, 5)
 	header[0] = byte(msg.Type)
@@ -130,7 +144,7 @@ func ReceiveMessage(conn net.Conn) (*Message, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to deserialize response: %v", err)
 		}
-		return &Message{Type: messageType, Data: *data}, nil
+		return &Message{Type: messageType, Data: data}, nil
 	}
 	
 	return nil, fmt.Errorf("unexpected message type: %d", messageType)
