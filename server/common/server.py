@@ -1,54 +1,37 @@
 import socket
 import logging
+import sys
 
 
 class Server:
     def __init__(self, port, listen_backlog):
         # Initialize server socket
         self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._server_socket.bind(('', port))
         self._server_socket.listen(listen_backlog)
-        self._running = True
+        self._client_sockets = []
 
     def run(self):
         """
         Server main loop that gracefully handles shutdown signals
         """
-        try:
-            while self._running:
-                try:
-                    # Set a timeout to allow periodic checking of _running flag
-                    self._server_socket.settimeout(1.0)
-                    client_sock = self.__accept_new_connection()
-                    self.__handle_client_connection(client_sock)
-                except socket.timeout:
-                    # This is expected, just continue the loop to check _running flag
-                    continue
-                except OSError as e:
-                    if self._running:
-                        logging.error(f"action: accept_connections | result: fail | error: {e}")
-                    else:
-                        # Server is shutting down, this is expected
-                        break
-        finally:
-            self._cleanup()
+        while True:
+            try:
+                client_sock = self.__accept_new_connection()
+                self._client_sockets.append(client_sock)
+                self.__handle_client_connection(client_sock)
+            except OSError as e:
+                logging.error(f"action: accept_connections | result: fail | error: {e}")
     
     def stop(self):
         """
         Gracefully stop the server
         """
-        logging.info("action: server_shutdown_started | result: success | msg: Stopping server")
-        self._running = False
-        
-    def _cleanup(self):
-        """
-        Clean up server resources
-        """
-        if hasattr(self, '_server_socket'):
-            logging.info("action: closing_server_socket | result: success | msg: Server socket closed")
-            self._server_socket.close()
-        logging.info("action: server_shutdown_completed | result: success | msg: Server shutdown completed")
+        for sock in self._client_sockets:
+            sock.close()
+        self._client_sockets = []
+        self._server_socket.close()
+        logging.info("action: server_shutdown_finished | result: success | msg: Stopping server")
 
     def __handle_client_connection(self, client_sock):
         """
