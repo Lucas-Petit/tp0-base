@@ -2,9 +2,9 @@ package common
 
 import (
 	"bufio"
-	"context"
 	"fmt"
 	"net"
+	"os"
 	"time"
 
 	"github.com/op/go-logging"
@@ -52,14 +52,14 @@ func (c *Client) createClientSocket() error {
 }
 
 // StartClientLoop Send messages to the client until some time threshold is met
-func (c *Client) StartClientLoop(ctx context.Context) {
+func (c *Client) StartClientLoop(sigChan <-chan os.Signal) {
 	// There is an autoincremental msgID to identify every message sent
 	// Messages if the message amount threshold has not been surpassed
 	for msgID := 1; msgID <= c.config.LoopAmount; msgID++ {
-		// Check if context was cancelled (SIGTERM received)
+		// Check if SIGTERM was received
 		select {
-		case <-ctx.Done():
-			log.Infof("action: client_shutdown | result: success | client_id: %v | msg: Graceful shutdown initiated", c.config.ID)
+		case sig := <-sigChan:
+			log.Infof("action: signal_received | result: success | signal: %v | client_id: %v | msg: Starting graceful shutdown", sig, c.config.ID)
 			if c.conn != nil {
 				log.Infof("action: closing_connection | result: success | client_id: %v", c.config.ID)
 				c.conn.Close()
@@ -102,8 +102,8 @@ func (c *Client) StartClientLoop(ctx context.Context) {
 		// Wait a time between sending one message and the next one
 		// Check for cancellation during sleep
 		select {
-		case <-ctx.Done():
-			log.Infof("action: client_shutdown | result: success | client_id: %v | msg: Graceful shutdown initiated during sleep", c.config.ID)
+		case sig := <-sigChan:
+			log.Infof("action: signal_received | result: success | signal: %v | client_id: %v | msg: Graceful shutdown during sleep", sig, c.config.ID)
 			log.Infof("action: client_shutdown_completed | result: success | client_id: %v", c.config.ID)
 			return
 		case <-time.After(c.config.LoopPeriod):
