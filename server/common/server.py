@@ -1,7 +1,8 @@
+import glob
 import socket
 import logging
-from .protocol import BATCH, Bet, receive_message, send_message, Message, RESPONSE, Response
-from .utils import store_bets
+from .protocol import BATCH, FINISHED_NOTIFICATION, WINNERS_QUERY, WINNERS_RESPONSE, Bet, WinnersResponse, receive_message, send_message, Message, RESPONSE, Response
+from .utils import has_won, load_bets, store_bets
 
 
 class Server:
@@ -11,6 +12,25 @@ class Server:
         self._server_socket.bind(('', port))
         self._server_socket.listen(listen_backlog)
         self._client_sockets = []
+
+        self._finished_agencies = set()
+        self._lottery_completed = False
+        self._total_agencies = self._count_agency_files()
+        self._pending_winner_queries = []
+        self._all_bets = []
+
+    def _count_agency_files(self):
+        """
+        Count the number of agency CSV files to determine expected agencies
+        """
+        try:
+            agency_files = glob.glob('/data/agency-*.csv')
+            count = len(agency_files)
+            logging.info(f"action: count_agency_files | result: success | count: {count}")
+            return count
+        except Exception as e:
+            logging.error(f"action: count_agency_files | result: fail | error: {e}")
+            return 0
 
     def run(self):
         """
@@ -50,15 +70,19 @@ class Server:
                 logging.error(f"action: receive_message | result: fail | ip: {addr[0]} | error: Failed to receive message")
                 self.__send_error_response(client_sock, "Failed to receive message")
                 return
-            
-            if message.type != BATCH:
+            if message.type != BATCH and message.type != WINNERS_QUERY and message.type != FINISHED_NOTIFICATION:
                 logging.error(f"action: receive_message | result: fail | ip: {addr[0]} | error: Invalid message type")
                 self.__send_error_response(client_sock, "Invalid message type")
                 return
-            
-            batch_data = message.data
-            self.__handle_batch_bets(client_sock, batch_data, addr)
-                
+
+            if message.type == WINNERS_QUERY:
+                self.__handle_winners_query(client_sock, message.data, addr)
+            elif message.type == BATCH:
+                batch_data = message.data
+                self.__handle_batch_bets(client_sock, batch_data, addr)
+            elif message.type == FINISHED_NOTIFICATION:
+                self.__handle_finished_notification(client_sock, message.data, addr)
+
         except OSError as e:
             if addr:
                 logging.error(f"action: receive_message | result: fail | ip: {addr[0]} | error: {e}")
@@ -106,6 +130,93 @@ class Server:
             logging.error(f"action: apuesta_recibida | result: fail | cantidad: {bet_count}")
             self.__send_error_response(client_sock, f"Failed to store batch: {e}")
     
+    def __handle_finished_notification(self, client_sock, finished_data, addr):
+        """Handle a finished notification from an agency"""
+        agency = finished_data.agency
+        logging.info(f'action: receive_finished_notification | result: success | ip: {addr[0]} | agency: {agency}')
+
+        try:
+            if agency not in self._finished_agencies:
+                self._finished_agencies.add(agency)
+                logging.info(f"action: agency_finished | result: success | agency: {agency} | finished_count: {len(self._finished_agencies)}")
+                
+                if len(self._finished_agencies) >= self._total_agencies and not self._lottery_completed:
+                    self.__perform_lottery()
+            else:
+                logging.info(f"action: agency_already_finished | result: success | agency: {agency} | finished_count: {len(self._finished_agencies)}")
+            
+            response = Response(success=True, message=f"Agency {agency} finished notification received")
+            response_message = Message(RESPONSE, response)
+            
+            if not send_message(client_sock, response_message):
+                logging.error(f"action: send_response | result: fail | ip: {addr[0]} | error: Failed to send response")
+            else:
+                logging.info(f"action: send_response | result: success | ip: {addr[0]}")
+        
+        except Exception as e:
+            logging.error(f"action: handle_finished_notification | result: fail | ip: {addr[0]} | agency: {agency} | error: {e}")
+            self.__send_error_response(client_sock, f"Failed to handle finished notification: {e}")
+
+    def __handle_winners_query(self, client_sock, query_data, addr):
+        """Handle a winners query from an agency"""
+        agency = query_data.agency
+        logging.info(f'action: receive_winners_query | result: success | ip: {addr[0]} | agency: {agency}')        
+
+        try:
+            if not self._lottery_completed:
+                response = Response(success=False, message="Lottery not completed yet, please try again")
+                response_message = Message(RESPONSE, response)
+                
+                if not send_message(client_sock, response_message):
+                    logging.error(f"action: send_response | result: fail | ip: {addr[0]} | error: Failed to send response")
+                else:
+                    logging.info(f"action: send_response | result: success | ip: {addr[0]} | agency: {agency} | message: lottery_not_complete")
+                return
+            
+            winners = self.__get_winners_for_agency(agency)
+            
+            winners_response = WinnersResponse(winners)
+            response_message = Message(WINNERS_RESPONSE, winners_response)
+            
+            if not send_message(client_sock, response_message):
+                logging.error(f"action: send_winners_response | result: fail | ip: {addr[0]} | error: Failed to send winners response")
+            else:
+                logging.info(f"action: send_winners_response | result: success | ip: {addr[0]} | agency: {agency} | winners_count: {len(winners)}")
+            
+        except Exception as e:
+            logging.error(f"action: handle_winners_query | result: fail | ip: {addr[0]} | agency: {agency} | error: {e}")
+            self.__send_error_response(client_sock, f"Failed to handle winners query: {e}")
+
+    def __perform_lottery(self):
+        """Perform the lottery when all agencies have finished"""
+        try:
+            logging.info("action: sorteo | result: success")
+            self._lottery_completed = True
+            self._all_bets = list(load_bets())
+
+        except Exception as e:
+            logging.error(f"action: sorteo | result: fail | error: {e}")
+
+    def __get_winners_for_agency(self, agency):
+        """Get list of winning DNI numbers for a specific agency"""
+        winners = []
+        try:
+            if not self._all_bets:
+                logging.error(f"action: get_winners_for_agency | result: fail | agency: {agency} | error: No bets loaded")
+                return winners
+
+            agency_int = int(agency)
+            for bet in self._all_bets:
+                if bet.agency == agency_int and has_won(bet):
+                    winners.append(bet.document)
+            
+            logging.info(f"action: get_winners_for_agency | result: success | agency: {agency} | winners_found: {len(winners)}")
+            
+        except Exception as e:
+            logging.error(f"action: get_winners_for_agency | result: fail | agency: {agency} | error: {e}")
+        
+        return winners
+
     def __send_error_response(self, client_sock, error_message):
         """Send an error response to the client"""
         try:

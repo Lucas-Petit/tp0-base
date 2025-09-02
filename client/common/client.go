@@ -126,6 +126,17 @@ func (c *Client) StartClientLoop(sigChan <-chan os.Signal) {
 			}
 		}
 	}
+
+	if err := c.notifyFinished(); err != nil {
+		log.Errorf("action: notify_finished | result: fail | client_id: %v | error: %v", c.config.ID, err)
+		return
+	}
+	
+	if err := c.queryWinners(); err != nil {
+		log.Errorf("action: query_winners | result: fail | client_id: %v | error: %v", c.config.ID, err)
+		return
+	}
+
 	log.Infof("action: all_batches_completed | result: success | client_id: %v | total_batches_sent: %d", c.config.ID, totalBatches)
 }
 
@@ -208,4 +219,119 @@ func (c *Client) sendBatch(batch []Bet) error {
 		return fmt.Errorf("invalid response data format")
 	}
 	return nil
+}
+
+// notifyFinished sends a finished notification to the server
+func (c *Client) notifyFinished() error {
+	conn, err := net.Dial("tcp", c.config.ServerAddress)
+	if err != nil {
+		return fmt.Errorf("failed to connect: %v", err)
+	}
+	defer conn.Close()
+
+	finishedNotification := FinishedNotification{
+		Agency: c.config.ID,
+	}
+	
+	message := Message{
+		Type: FINISHED_NOTIFICATION,
+		Data: finishedNotification,
+	}
+	
+	log.Infof("action: notify_finished | result: success | client_id: %v", c.config.ID)
+
+	if err := SendMessage(conn, message); err != nil {
+		return fmt.Errorf("failed to send finished notification: %v", err)
+	}
+
+	response, err := ReceiveMessage(conn)
+	if err != nil {
+		return fmt.Errorf("failed to receive response: %v", err)
+	}
+
+	if response.Type != RESPONSE {
+		return fmt.Errorf("unexpected response type: %s", response.Type)
+	}
+
+	if resp, ok := response.Data.(*Response); ok {
+		if !resp.Success {
+			return fmt.Errorf("server error: %s", resp.Message)
+		}
+		log.Infof("action: finished_notification_confirmed | result: success | client_id: %v | message: %s", 
+			c.config.ID, resp.Message)
+	} else {
+		return fmt.Errorf("invalid response data type")
+	}
+
+	return nil
+}
+
+// queryWinners queries the server for winners of this agency
+func (c *Client) queryWinners() error {
+	maxRetries := 3
+	retryDelay := time.Second * 2
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		log.Infof("action: query_winners | result: in_progress | client_id: %s | attempt: %d", c.config.ID, attempt)
+
+		conn, err := net.Dial("tcp", c.config.ServerAddress)
+		if err != nil {
+			if attempt < maxRetries {
+				time.Sleep(retryDelay)
+				continue
+			}
+			log.Errorf("action: query_winners | result: fail | client_id: %s | error: failed to connect: %v", c.config.ID, err)
+			return err
+		}
+		defer conn.Close()
+
+		query := WinnersQuery{Agency: c.config.ID}
+		message := Message{Type: WINNERS_QUERY, Data: query}
+
+		if err := SendMessage(conn, message); err != nil {
+			if attempt < maxRetries {
+				time.Sleep(retryDelay)
+				continue
+			}
+			log.Errorf("action: query_winners | result: fail | client_id: %s | error: failed to send query: %v", c.config.ID, err)
+			return err
+		}
+
+		response, err := ReceiveMessage(conn)
+		if err != nil {
+			if attempt < maxRetries {
+				time.Sleep(retryDelay)
+				continue
+			}
+			log.Errorf("action: query_winners | result: fail | client_id: %s | error: failed to receive response: %v", c.config.ID, err)
+			return err
+		}
+
+		if response.Type == WINNERS_RESPONSE {
+			winnersResponse := response.Data.(*WinnersResponse)
+			winnerCount := len(winnersResponse.Winners)
+
+			log.Infof("action: consulta_ganadores | result: success | cant_ganadores: %d", winnerCount)
+			return nil
+		} else if response.Type == RESPONSE {
+			responseData := response.Data.(*Response)
+			if !responseData.Success {
+				if attempt < maxRetries {
+					time.Sleep(retryDelay)
+					continue
+				}
+				log.Infof("action: query_winners | result: fail | client_id: %s | message: %s", c.config.ID, responseData.Message)
+				return fmt.Errorf("lottery not completed: %s", responseData.Message)
+			}
+		}
+
+		if attempt < maxRetries {
+			time.Sleep(retryDelay)
+			continue
+		}
+		log.Errorf("action: query_winners | result: fail | client_id: %s | error: unexpected response type", c.config.ID)
+		return fmt.Errorf("unexpected response type")
+	}
+
+	return fmt.Errorf("failed to query winners after %d attempts", maxRetries)
 }

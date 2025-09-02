@@ -4,6 +4,9 @@ from typing import Optional
 
 BATCH = 1
 RESPONSE = 2
+FINISHED_NOTIFICATION = 3
+WINNERS_QUERY = 4
+WINNERS_RESPONSE = 5
 
 
 class Bet:
@@ -27,6 +30,17 @@ class Batch:
         self.agency = agency
         self.bets = bets
 
+class FinishedNotification:
+    def __init__(self, agency: str):
+        self.agency = agency
+
+class WinnersQuery:
+    def __init__(self, agency: str):
+        self.agency = agency
+
+class WinnersResponse:
+    def __init__(self, winners: list):
+        self.winners = winners
 
 class Message:
     def __init__(self, msg_type: int, data):
@@ -60,6 +74,15 @@ def deserialize_batch(data: bytes) -> Batch:
     
     return Batch(agency, bets)
 
+def deserialize_winners_query(data: bytes) -> WinnersQuery:
+    """Convert binary data to a winners query"""
+    agency = data.decode('utf-8')
+    return WinnersQuery(agency)
+
+def deserialize_finished_notification(data: bytes) -> FinishedNotification:
+    """Convert binary data to a finished notification"""
+    agency = data.decode('utf-8')
+    return FinishedNotification(agency)
 
 def serialize_response(response: Response) -> bytes:
     """Convert a response to binary format"""
@@ -67,6 +90,10 @@ def serialize_response(response: Response) -> bytes:
     data_str = f"{success_str}|{response.message}"
     return data_str.encode('utf-8')
 
+def serialize_winners_response(response: WinnersResponse) -> bytes:
+    """Convert a winners response to binary format"""
+    winners_data = "|".join(response.winners)
+    return f"{winners_data}".encode('utf-8')
 
 def send_message(conn: socket.socket, message: Message) -> bool:
     """
@@ -77,6 +104,11 @@ def send_message(conn: socket.socket, message: Message) -> bool:
         if message.type == RESPONSE:
             if isinstance(message.data, Response):
                 payload = serialize_response(message.data)
+            else:
+                return False
+        elif message.type == WINNERS_RESPONSE:
+            if isinstance(message.data, WinnersResponse):
+                payload = serialize_winners_response(message.data)
             else:
                 return False
         else:
@@ -134,6 +166,10 @@ def receive_message(conn: socket.socket) -> Optional[Message]:
 
         if message_type == BATCH:
             data = deserialize_batch(payload)
+        elif message_type == WINNERS_QUERY:
+            data = deserialize_winners_query(payload)
+        elif message_type == FINISHED_NOTIFICATION:
+            data = deserialize_finished_notification(payload)
         else:
             return None
         return Message(message_type, data)

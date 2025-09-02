@@ -10,6 +10,9 @@ import (
 const (
 	BATCH    = 1
 	RESPONSE = 2
+	FINISHED_NOTIFICATION = 3
+	WINNERS_QUERY = 4
+	WINNERS_RESPONSE = 5
 )
 
 type Message struct {
@@ -34,6 +37,18 @@ type Batch struct {
 type Response struct {
 	Success bool
 	Message string
+}
+
+type WinnersQuery struct {
+	Agency string
+}
+
+type WinnersResponse struct {
+	Winners []string
+}
+
+type FinishedNotification struct {
+	Agency string
 }
 
 func intToBytes(value int, size int) []byte {
@@ -67,6 +82,14 @@ func SerializeBatch(batch Batch) []byte {
 	return []byte(data)
 }
 
+func SerializeFinishedNotification(notification FinishedNotification) []byte {
+	return []byte(notification.Agency)
+}
+
+func SerializeWinnersQuery(query WinnersQuery) []byte {
+	return []byte(query.Agency)
+}
+
 func DeserializeResponse(data []byte) (*Response, error) {
 	dataStr := string(data)
 	parts := strings.Split(dataStr, "|")
@@ -80,17 +103,43 @@ func DeserializeResponse(data []byte) (*Response, error) {
 	}, nil
 }
 
+func DeserializeWinnersResponse(data []byte) (*WinnersResponse, error) {
+	dataStr := string(data)
+	if dataStr == "" {
+		return &WinnersResponse{
+			Winners: []string{},
+		}, nil
+	}
+	winners := strings.Split(dataStr, "|")
+	return &WinnersResponse{
+		Winners: winners,
+	}, nil
+}
+
 func SendMessage(conn net.Conn, msg Message) error {
-	if msg.Type != BATCH {
-		return fmt.Errorf("client can only send BATCH messages")
+	var payload []byte
+	switch msg.Type {
+	case BATCH:
+		batch, ok := msg.Data.(Batch)
+		if !ok {
+			return fmt.Errorf("invalid batch data")
+		}
+		payload = SerializeBatch(batch)
+	case WINNERS_QUERY:
+		query, ok := msg.Data.(WinnersQuery)
+		if !ok {
+			return fmt.Errorf("invalid winners query data")
+		}
+		payload = SerializeWinnersQuery(query)
+	case FINISHED_NOTIFICATION:
+		notification, ok := msg.Data.(FinishedNotification)
+		if !ok {
+			return fmt.Errorf("invalid finished notification data")
+		}
+		payload = SerializeFinishedNotification(notification)
+	default:
+		return fmt.Errorf("invalid message type")
 	}
-
-	batch, ok := msg.Data.(Batch)
-	if !ok {
-		return fmt.Errorf("invalid batch data")
-	}
-
-	payload := SerializeBatch(batch)
 	
 	header := make([]byte, 5)
 	header[0] = byte(msg.Type)
@@ -145,7 +194,13 @@ func ReceiveMessage(conn net.Conn) (*Message, error) {
 			return nil, fmt.Errorf("failed to deserialize response: %v", err)
 		}
 		return &Message{Type: messageType, Data: data}, nil
+	} else if messageType == WINNERS_RESPONSE {
+		data, err := DeserializeWinnersResponse(payload)
+		if err != nil {
+			return nil, fmt.Errorf("failed to deserialize winners response: %v", err)
+		}
+		return &Message{Type: messageType, Data: data}, nil
 	}
-	
+
 	return nil, fmt.Errorf("unexpected message type: %d", messageType)
 }
