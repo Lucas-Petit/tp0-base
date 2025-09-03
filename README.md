@@ -17,6 +17,24 @@ Los targets disponibles son:
 | `docker-image`  | Construye las imágenes a ser utilizadas tanto en el servidor como en el cliente. Este target es utilizado por **docker-compose-up**, por lo cual se lo puede utilizar para probar nuevos cambios en las imágenes antes de arrancar el proyecto. |
 | `build` | Compila la aplicación cliente para ejecución en el _host_ en lugar de en Docker. De este modo la compilación es mucho más veloz, pero requiere contar con todo el entorno de Golang y Python instalados en la máquina _host_. |
 
+
+### Resolucion
+- Ej1: Para el ejercicio 1 utilize un script de Python por simplicidad a pesar de que se podia realizar en el .sh mismo. 
+- Ej2: Para este ejercicio simplemente modifique el script para que utilize volumes para la config del cliente y server.
+- Ej3: Aqui cree un breve script .sh donde utilizando Alpine sobre docker se puede usar netcat para el mensaje de test a enviar.
+- Ej4: En este ejercicio utilize un canal de os.SIgnal para ser notificado cuando se utilize SIGTERM o SIGINT en el cliente y poder cerrar la conexion de manera graceful. Y el server lo mismo, pero antes de cerrar su socket cierra las conexiones con todos los clientes.
+- Ej5: Como protocolo se envian dos mensajes, uno de BET y otro de RESPONSE. Todos los mensajes tienen el siguiente formato: <br>
+[1 byte tipo][4 bytes longitud del payoload][payload]<br> 
+El cliente solo envia BET y recibe RESPONSE y el server viceversa. Se revisa que no se hagan short-writes utilizando la cantidad enviada y la longtiud del mensaje. Y short-reads asegurandome de que esten todos los bytes necesarios.
+- Ej6: Se mantiene el protocolo anterior pero ahora se leen las apuestas con csvs, se utiliza un mensaje de tipo BATCH en lugar de BET y por cada batch se crea una nueva conexion. Se utilizan caracteres determinados para delimitar las apuestas y sus campos en el mensaje BATCH: <br>
+[agencia||apuesta1_campo1|apuesta1_campo2;;apuesta2_campo1|apuesta2_campo2] <br>
+El cliente espera por un RESPONSE antes de enviar el siguiente BATCH. La lectura del csv tambien se realiza de a batches, sin cargar todo el archivo en memoria. Se limito el batch maxAmount a 90 para que no supere los 8KB. <br>
+Tambien se cuentan la cantidad de csvs al principio para determinar la cantidad de agencias. Esto hace que el servidor quede muy acoplado a que las agencias tengan cada una un csv propio. Pero a su vez permite que el limite sea establecido por la cantidad de csvs.
+- Ej7: Ahora se agregaron nuevos mensajes para avisar que se finalizo el envio de apuestas (FINISHED_NOTIFICATION), preguntar por los ganadores (WINNERS_QUERY) y avisar cuales son estos (WINNERS_RESPONSE). En caso de que la agencia haya terminado y aun falten otras por terminar, reintenta la pregunta de ganadores una cantidad fija de veces hasta obtener la respuesta. 
+- Ej8: Se utiliza threading en el servidor para manejar las conexiones de manera concurrente. Creo que el uso de threading es correcto a pesar del GIL ya que la mayoria del tiempo son espera de conexiones y hay poco procesamiento de CPU intensivo. Utilizo daemon threads para asegurar el graceful shutdown.<br>
+Se utilizo locks para el acceso a las variables que pueden ser modificadas dependiendo de los mensajes que reciba de las agencias, como cuando la loteria se completa o el guardado de apuestas.
+
+
 ### Servidor
 
 Se trata de un "echo server", en donde los mensajes recibidos por el cliente se responden inmediatamente y sin alterar. 
