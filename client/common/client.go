@@ -60,44 +60,42 @@ func (c *Client) createClientSocket() error {
 	return nil
 }
 
-// StartClientLoop loops sending bets
+// StartClientLoop loops sending bets by reading CSV file in batches
 func (c *Client) StartClientLoop(sigChan <-chan os.Signal) {
 	csvPath := fmt.Sprintf("/data/agency-%s.csv", c.config.ID)
-	bets, err := c.readBetsFromCSV(csvPath)
+	
+	file, err := os.Open(csvPath)
 	if err != nil {
-		log.Errorf("action: read_bets | result: fail | client_id: %v | error: %v", c.config.ID, err)
+		log.Errorf("action: open_csv | result: fail | client_id: %v | error: %v", c.config.ID, err)
 		return
 	}
+	defer file.Close()
 
-	if len(bets) == 0 {
-		log.Infof("action: read_bets | result: success | client_id: %v | msg: No bets found", c.config.ID)
-		return
-	}
+	scanner := bufio.NewScanner(file)
+	batchNumber := 0
+	lineNumber := 0
 
-	totalBatches := (len(bets) + c.config.BatchMaxAmount - 1) / c.config.BatchMaxAmount
-	log.Infof("action: start_batch_processing | result: success | client_id: %v | total_bets: %d | batch_size: %d | total_batches: %d", 
-		c.config.ID, len(bets), c.config.BatchMaxAmount, totalBatches)
+	log.Infof("action: start_batch_processing | result: success | client_id: %v | batch_size: %d", 
+		c.config.ID, c.config.BatchMaxAmount)
 
-	for i := 0; i < len(bets); i += c.config.BatchMaxAmount {
-		// Check if SIGTERM was received
+	for {
 		select {
 		case sig := <-sigChan:
 			log.Infof("action: signal_received | result: success | signal: %v | client_id: %v | msg: Starting graceful shutdown", sig, c.config.ID)
 			log.Infof("action: client_shutdown_completed | result: success | client_id: %v", c.config.ID)
 			return
 		default:
-			// Continue with normal operation
 		}
 
-		end := i + c.config.BatchMaxAmount
-		if end > len(bets) {
-			end = len(bets)
+		batch := c.readNextBatch(scanner, &lineNumber)
+		if len(batch) == 0 {
+			break
 		}
-		batch := bets[i:end]
-		batchNumber := (i / c.config.BatchMaxAmount) + 1
 
-		log.Infof("action: preparing_batch | result: success | client_id: %v | batch_number: %d/%d | batch_size: %d", 
-			c.config.ID, batchNumber, totalBatches, len(batch))
+		batchNumber++
+
+		log.Infof("action: preparing_batch | result: success | client_id: %v | batch_number: %d | batch_size: %d", 
+			c.config.ID, batchNumber, len(batch))
 
 		if err := c.createClientSocket(); err != nil {
 			log.Errorf("action: create_connection | result: fail | client_id: %v | error: %v", c.config.ID, err)
@@ -115,47 +113,40 @@ func (c *Client) StartClientLoop(sigChan <-chan os.Signal) {
 		c.conn.Close()
 		c.conn = nil
 
-		if end < len(bets) {
-			select {
-			case sig := <-sigChan:
-				log.Infof("action: signal_received | result: success | signal: %v | client_id: %v | msg: Graceful shutdown during sleep", sig, c.config.ID)
-				log.Infof("action: client_shutdown_completed | result: success | client_id: %v", c.config.ID)
-				return
-			case <-time.After(c.config.LoopPeriod):
-				// Continue to next batch
-			}
+		select {
+		case sig := <-sigChan:
+			log.Infof("action: signal_received | result: success | signal: %v | client_id: %v | msg: Graceful shutdown during sleep", sig, c.config.ID)
+			log.Infof("action: client_shutdown_completed | result: success | client_id: %v", c.config.ID)
+			return
+		case <-time.After(c.config.LoopPeriod):
 		}
 	}
-	log.Infof("action: all_batches_completed | result: success | client_id: %v | total_batches_sent: %d", c.config.ID, totalBatches)
+
+	log.Infof("action: all_batches_completed | result: success | client_id: %v | total_batches_sent: %d", c.config.ID, batchNumber)
 }
 
-func (c *Client) readBetsFromCSV(csvPath string) ([]Bet, error) {
-	file, err := os.Open(csvPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open CSV file: %v", err)
-	}
-	defer file.Close()
-
-	var bets []Bet
-	scanner := bufio.NewScanner(file)
-	lineNumber := 0
-
-	for scanner.Scan() {
-		lineNumber++
+func (c *Client) readNextBatch(scanner *bufio.Scanner, lineNumber *int) []Bet {
+	var batch []Bet
+	
+	for len(batch) < c.config.BatchMaxAmount && scanner.Scan() {
+		*lineNumber++
 		line := strings.TrimSpace(scanner.Text())
 		
 		if line == "" {
 			continue
 		}
+		
 		fields := strings.Split(line, ",")
 		if len(fields) != 5 {
 			log.Errorf("action: parse_csv_line | result: fail | line: %d | error: expected 5 fields, got %d", 
-				lineNumber, len(fields))
+				*lineNumber, len(fields))
 			continue
 		}
+		
 		for i := range fields {
 			fields[i] = strings.TrimSpace(fields[i])
 		}
+		
 		bet := Bet{
 			Agency:    c.config.ID,
 			FirstName: fields[0],
@@ -164,15 +155,15 @@ func (c *Client) readBetsFromCSV(csvPath string) ([]Bet, error) {
 			Birthdate: fields[3],
 			Number:    fields[4],
 		}
-		bets = append(bets, bet)
+		batch = append(batch, bet)
 	}
+	
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("error reading file: %v", err)
+		log.Errorf("action: read_batch | result: fail | error: %v", err)
 	}
-	return bets, nil
+	
+	return batch
 }
-
-
 
 func (c *Client) sendBatch(batch []Bet) error {
 	batchData := Batch{
