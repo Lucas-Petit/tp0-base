@@ -54,8 +54,7 @@ class Server:
                     
                     client_thread = threading.Thread(
                         target=self.__handle_client_connection,
-                        args=(client_sock,),
-                        daemon=True
+                        args=(client_sock,)
                     )
                     self._client_threads.append(client_thread)
                     client_thread.start()
