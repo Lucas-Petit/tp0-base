@@ -36,7 +36,7 @@ class Server:
 
     def __handle_client_connection(self, client_sock):
         """
-        Handle lottery bet from a specific client socket and closes the socket
+        Handle multiple lottery bets from a specific client socket until client disconnects
 
         If a problem arises in the communication with the client, the
         client socket will also be closed
@@ -45,44 +45,19 @@ class Server:
         try:
             addr = client_sock.getpeername()
             
-            message = receive_message(client_sock)
-            if not message:
-                logging.error(f"action: receive_message | result: fail | ip: {addr[0]} | error: Failed to receive message")
-                self.__send_error_response(client_sock, "Failed to receive message")
-                return
-            
-            if message.type != BET:
-                logging.error(f"action: receive_message | result: fail | ip: {addr[0]} | error: Invalid message type")
-                self.__send_error_response(client_sock, "Invalid message type")
-                return
-            
-            bet_data = message.data
-            logging.info(f'action: receive_message | result: success | ip: {addr[0]} | dni: {bet_data.document} | numero: {bet_data.number}')
-            
-            try:
-                from .utils import Bet
-                bet_utils = Bet(
-                    agency=bet_data.agency,
-                    first_name=bet_data.first_name,
-                    last_name=bet_data.last_name,
-                    document=bet_data.document,
-                    birthdate=bet_data.birthdate,
-                    number=bet_data.number
-                )
+            while True:
+                message = receive_message(client_sock)
+                if not message:
+                    logging.info(f"action: client_disconnected | result: success | ip: {addr[0]}")
+                    break
                 
-                store_bets([bet_utils])
+                if message.type != BET:
+                    logging.error(f"action: receive_message | result: fail | ip: {addr[0]} | error: Invalid message type")
+                    self.__send_error_response(client_sock, "Invalid message type")
+                    break
                 
-                logging.info(f"action: apuesta_almacenada | result: success | dni: {bet_data.document} | numero: {bet_data.number}")
-                
-                response = Response(success=True, message="Bet stored successfully")
-                response_message = Message(RESPONSE, response)
-                
-                if not send_message(client_sock, response_message):
-                    logging.error(f"action: send_response | result: fail | ip: {addr[0]} | error: Failed to send response")
-                
-            except Exception as e:
-                logging.error(f"action: store_bet | result: fail | ip: {addr[0]} | dni: {bet_data.document if hasattr(bet_data, 'document') else 'unknown'} | error: {e}")
-                self.__send_error_response(client_sock, f"Failed to store bet: {e}")
+                if not self.__process_bet_message(client_sock, message.data, addr):
+                    break
                 
         except OSError as e:
             if addr:
@@ -95,6 +70,41 @@ class Server:
             else:
                 logging.info("action: closing_client_connection | result: success")
             client_sock.close()
+            if client_sock in self._client_sockets:
+                self._client_sockets.remove(client_sock)
+
+    def __process_bet_message(self, client_sock, bet_data, addr):
+        """Process a single bet message and send response. Returns True if successful."""
+        try:
+            logging.info(f'action: receive_message | result: success | ip: {addr[0]} | dni: {bet_data.document} | numero: {bet_data.number}')
+            
+            from .utils import Bet
+            bet_utils = Bet(
+                agency=bet_data.agency,
+                first_name=bet_data.first_name,
+                last_name=bet_data.last_name,
+                document=bet_data.document,
+                birthdate=bet_data.birthdate,
+                number=bet_data.number
+            )
+            
+            store_bets([bet_utils])
+            
+            logging.info(f"action: apuesta_almacenada | result: success | dni: {bet_data.document} | numero: {bet_data.number}")
+            
+            response = Response(success=True, message="Bet stored successfully")
+            response_message = Message(RESPONSE, response)
+            
+            if not send_message(client_sock, response_message):
+                logging.error(f"action: send_response | result: fail | ip: {addr[0]} | error: Failed to send response")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            logging.error(f"action: store_bet | result: fail | ip: {addr[0]} | dni: {bet_data.document if hasattr(bet_data, 'document') else 'unknown'} | error: {e}")
+            self.__send_error_response(client_sock, f"Failed to store bet: {e}")
+            return False
     
     def __send_error_response(self, client_sock, error_message):
         """Send an error response to the client"""

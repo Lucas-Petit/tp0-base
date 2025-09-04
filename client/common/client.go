@@ -66,32 +66,35 @@ func (c *Client) createClientSocket() error {
 	return nil
 }
 
-// StartClientLoop loops sending bets
+// StartClientLoop loops sending bets with persistent connection
 func (c *Client) StartClientLoop(sigChan <-chan os.Signal) {
+	if err := c.createClientSocket(); err != nil {
+		log.Errorf("action: create_connection | result: fail | client_id: %v | error: %v", c.config.ID, err)
+		return
+	}
+	
+	log.Infof("action: create_connection | result: success | client_id: %v", c.config.ID)
+	
+	defer func() {
+		if c.conn != nil {
+			log.Infof("action: closing_connection | result: success | client_id: %v", c.config.ID)
+			c.conn.Close()
+			c.conn = nil
+		}
+	}()
+
 	for i := 0; i < c.config.LoopAmount; i++ {
 		// Check if SIGTERM was received
 		select {
 		case sig := <-sigChan:
 			log.Infof("action: signal_received | result: success | signal: %v | client_id: %v | msg: Starting graceful shutdown", sig, c.config.ID)
-			if c.conn != nil {
-				log.Infof("action: closing_connection | result: success | client_id: %v", c.config.ID)
-				c.conn.Close()
-			}
 			log.Infof("action: client_shutdown_completed | result: success | client_id: %v", c.config.ID)
 			return
 		default:
 			// Continue with normal operation
 		}
 
-		if err := c.createClientSocket(); err != nil {
-			return
-		}
-		
 		c.sendSingleBet()
-		
-		log.Infof("action: closing_connection | result: success | client_id: %v", c.config.ID)
-		c.conn.Close()
-		c.conn = nil
 		
 		if i < c.config.LoopAmount-1 {
 			select {
@@ -104,9 +107,11 @@ func (c *Client) StartClientLoop(sigChan <-chan os.Signal) {
 			}
 		}
 	}
+	
+	log.Infof("action: all_bets_completed | result: success | client_id: %v | total_bets_sent: %d", c.config.ID, c.config.LoopAmount)
 }
 
-// sendSingleBet sends a single bet to the server
+// sendSingleBet sends a single bet to the server using the persistent connection
 func (c *Client) sendSingleBet() {
 	bet := Bet{
 		Agency:    c.config.ID,
