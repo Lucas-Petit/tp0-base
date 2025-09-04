@@ -71,7 +71,6 @@ func (c *Client) StartClientLoop(sigChan <-chan os.Signal) {
 	}
 	defer file.Close()
 
-	// Create persistent connection at the start
 	if err := c.createClientSocket(); err != nil {
 		log.Errorf("action: create_persistent_connection | result: fail | client_id: %v | error: %v", c.config.ID, err)
 		return
@@ -79,7 +78,6 @@ func (c *Client) StartClientLoop(sigChan <-chan os.Signal) {
 	
 	log.Infof("action: create_persistent_connection | result: success | client_id: %v", c.config.ID)
 	
-	// Ensure connection is closed when function exits
 	defer func() {
 		if c.conn != nil {
 			log.Infof("action: closing_persistent_connection | result: success | client_id: %v", c.config.ID)
@@ -95,7 +93,6 @@ func (c *Client) StartClientLoop(sigChan <-chan os.Signal) {
 	log.Infof("action: start_batch_processing | result: success | client_id: %v | batch_size: %d", 
 		c.config.ID, c.config.BatchMaxAmount)
 
-	// Phase 1: Send all batches
 	for {
 		select {
 		case sig := <-sigChan:
@@ -107,7 +104,7 @@ func (c *Client) StartClientLoop(sigChan <-chan os.Signal) {
 
 		batch := c.readNextBatch(scanner, &lineNumber)
 		if len(batch) == 0 {
-			break // End of file - move to next phase
+			break
 		}
 
 		batchNumber++
@@ -121,13 +118,11 @@ func (c *Client) StartClientLoop(sigChan <-chan os.Signal) {
 		}
 	}
 
-	// Phase 2: Send finished notification using same connection
 	if err := c.notifyFinished(); err != nil {
 		log.Errorf("action: notify_finished | result: fail | client_id: %v | error: %v", c.config.ID, err)
 		return
 	}
 
-	// Phase 3: Query winners with retry logic using same connection
 	if err := c.queryWinners(); err != nil {
 		log.Errorf("action: query_winners | result: fail | client_id: %v | error: %v", c.config.ID, err)
 		return
@@ -265,7 +260,6 @@ func (c *Client) queryWinners() error {
 		return err
 	}
 
-	// Wait for the server to send the winners response when lottery is ready
 	response, err := ReceiveMessage(c.conn)
 	if err != nil {
 		log.Errorf("action: query_winners | result: fail | client_id: %s | error: failed to receive response: %v", c.config.ID, err)
