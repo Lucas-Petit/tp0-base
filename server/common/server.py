@@ -36,7 +36,7 @@ class Server:
 
     def __handle_client_connection(self, client_sock):
         """
-        Handle lottery bet batch from a specific client socket and closes the socket
+        Handle multiple lottery bet batches from a specific client socket until client disconnects
 
         If a problem arises in the communication with the client, the
         client socket will also be closed
@@ -45,19 +45,20 @@ class Server:
         try:
             addr = client_sock.getpeername()
             
-            message = receive_message(client_sock)
-            if not message:
-                logging.error(f"action: receive_message | result: fail | ip: {addr[0]} | error: Failed to receive message")
-                self.__send_error_response(client_sock, "Failed to receive message")
-                return
-            
-            if message.type != BATCH:
-                logging.error(f"action: receive_message | result: fail | ip: {addr[0]} | error: Invalid message type")
-                self.__send_error_response(client_sock, "Invalid message type")
-                return
-            
-            batch_data = message.data
-            self.__handle_batch_bets(client_sock, batch_data, addr)
+            while True:
+                message = receive_message(client_sock)
+                if not message:
+                    logging.info(f"action: client_disconnected | result: success | ip: {addr[0]}")
+                    break
+                
+                if message.type != BATCH:
+                    logging.error(f"action: receive_message | result: fail | ip: {addr[0]} | error: Invalid message type")
+                    self.__send_error_response(client_sock, "Invalid message type")
+                    break
+                
+                batch_data = message.data
+                if not self.__handle_batch_bets(client_sock, batch_data, addr):
+                    break
                 
         except OSError as e:
             if addr:
@@ -70,10 +71,11 @@ class Server:
             else:
                 logging.info("action: closing_client_connection | result: success")
             client_sock.close()
-            self._client_sockets.remove(client_sock)
+            if client_sock in self._client_sockets:
+                self._client_sockets.remove(client_sock)
 
     def __handle_batch_bets(self, client_sock, batch_data, addr):
-        """Handle a batch of bets message"""
+        """Handle a batch of bets message. Returns True if successful."""
         
         bet_count = len(batch_data.bets)
         logging.info(f'action: receive_message | result: success | ip: {addr[0]} | cantidad: {bet_count}')
@@ -99,12 +101,15 @@ class Server:
             
             if not send_message(client_sock, response_message):
                 logging.error(f"action: send_response | result: fail | ip: {addr[0]} | error: Failed to send response")
+                return False
             else:
                 logging.info(f"action: send_response | result: success | ip: {addr[0]}")
+                return True
             
         except Exception as e:
             logging.error(f"action: apuesta_recibida | result: fail | cantidad: {bet_count}")
             self.__send_error_response(client_sock, f"Failed to store batch: {e}")
+            return False
     
     def __send_error_response(self, client_sock, error_message):
         """Send an error response to the client"""

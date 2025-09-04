@@ -60,7 +60,7 @@ func (c *Client) createClientSocket() error {
 	return nil
 }
 
-// StartClientLoop loops sending bets by reading CSV file in batches
+// StartClientLoop loops sending bets by reading CSV file in batches with persistent connection
 func (c *Client) StartClientLoop(sigChan <-chan os.Signal) {
 	csvPath := fmt.Sprintf("/data/agency-%s.csv", c.config.ID)
 	
@@ -70,6 +70,21 @@ func (c *Client) StartClientLoop(sigChan <-chan os.Signal) {
 		return
 	}
 	defer file.Close()
+
+	if err := c.createClientSocket(); err != nil {
+		log.Errorf("action: create_persistent_connection | result: fail | client_id: %v | error: %v", c.config.ID, err)
+		return
+	}
+	
+	log.Infof("action: create_persistent_connection | result: success | client_id: %v", c.config.ID)
+	
+	defer func() {
+		if c.conn != nil {
+			log.Infof("action: closing_persistent_connection | result: success | client_id: %v", c.config.ID)
+			c.conn.Close()
+			c.conn = nil
+		}
+	}()
 
 	scanner := bufio.NewScanner(file)
 	batchNumber := 0
@@ -97,31 +112,19 @@ func (c *Client) StartClientLoop(sigChan <-chan os.Signal) {
 		log.Infof("action: preparing_batch | result: success | client_id: %v | batch_number: %d | batch_size: %d", 
 			c.config.ID, batchNumber, len(batch))
 
-		if err := c.createClientSocket(); err != nil {
-			log.Errorf("action: create_connection | result: fail | client_id: %v | error: %v", c.config.ID, err)
+		select {
+		case sig := <-sigChan:
+			log.Infof("action: signal_received | result: success | signal: %v", sig, c.config.ID) 
 			return
+		default:
 		}
 
 		if err := c.sendBatch(batch); err != nil {
 			log.Errorf("action: send_batch | result: fail | client_id: %v | batch_number: %d | error: %v", c.config.ID, batchNumber, err)
-			c.conn.Close()
-			c.conn = nil
 			return
 		}
 
-		log.Infof("action: closing_connection | result: success | client_id: %v | batch_number: %d", c.config.ID, batchNumber)
-		c.conn.Close()
-		c.conn = nil
-
-		select {
-		case sig := <-sigChan:
-			log.Infof("action: signal_received | result: success | signal: %v | client_id: %v | msg: Graceful shutdown during sleep", sig, c.config.ID)
-			log.Infof("action: client_shutdown_completed | result: success | client_id: %v", c.config.ID)
-			return
-		case <-time.After(c.config.LoopPeriod):
-		}
 	}
-
 	log.Infof("action: all_batches_completed | result: success | client_id: %v | total_batches_sent: %d", c.config.ID, batchNumber)
 }
 
@@ -180,8 +183,8 @@ func (c *Client) sendBatch(batch []Bet) error {
 	if err := SendMessage(c.conn, message); err != nil {
 		return fmt.Errorf("failed to send batch: %v", err)
 	}
+	
 	response, err := ReceiveMessage(c.conn)
-
 	if err != nil {
 		return fmt.Errorf("failed to receive response: %v", err)
 	}
@@ -189,6 +192,7 @@ func (c *Client) sendBatch(batch []Bet) error {
 	if response.Type != RESPONSE {
 		return fmt.Errorf("unexpected response type: %d", response.Type)
 	}
+	
 	if resp, ok := response.Data.(*Response); ok {
 		if !resp.Success {
 			return fmt.Errorf("server error: %s", resp.Message)
@@ -198,5 +202,6 @@ func (c *Client) sendBatch(batch []Bet) error {
 	} else {
 		return fmt.Errorf("invalid response data format")
 	}
+	
 	return nil
 }
