@@ -34,15 +34,24 @@ class Server:
 
     def run(self):
         """
-        Server main loop that gracefully handles shutdown signals
+        Server main loop: accept all clients, process their messages, then run lottery
         """
         while True:
             try:
-                client_sock = self.__accept_new_connection()
-                self._client_sockets.append(client_sock)
-                self.__handle_client_connection(client_sock)
+                while len(self._client_sockets) < self._total_agencies:
+                    client_sock = self.__accept_new_connection()
+                    self._client_sockets.append(client_sock)
+                
+                logging.info(f"action: all_clients_connected | result: success | count: {len(self._client_sockets)}")
+                
+                self.__process_all_clients()
+                
+                self.__perform_lottery()
+                self.__send_winners_to_all_clients()
+                
             except OSError as e:
-                logging.error(f"action: accept_connections | result: fail | error: {e}")
+                logging.error(f"action: server_main_loop | result: fail | error: {e}")
+                break
     
     def stop(self):
         """
@@ -54,47 +63,91 @@ class Server:
         self._server_socket.close()
         logging.info("action: server_shutdown_finished | result: success | msg: Stopping server")
 
-    def __handle_client_connection(self, client_sock):
-        """
-        Handle lottery bet batch from a specific client socket and closes the socket
+    def __process_all_clients(self):
+        """Process messages from all connected clients until all agencies finish and send winner queries"""
+        winner_queries_received = 0
+        
+        while len(self._finished_agencies) < self._total_agencies or winner_queries_received < self._total_agencies:
+            for client_sock in self._client_sockets[:]:
+                try:
+                    client_sock.settimeout(0.5)
+                    message = receive_message(client_sock)
+                    if message:
+                        addr = client_sock.getpeername()
+                        if message.type == WINNERS_QUERY:
+                            winner_queries_received += 1
+                        self.__handle_single_message(client_sock, message, addr)
+                except socket.timeout:
+                    continue
+                except (ConnectionResetError, BrokenPipeError, OSError):
+                    if client_sock in self._client_sockets:
+                        self._client_sockets.remove(client_sock)
+                    client_sock.close()
 
-        If a problem arises in the communication with the client, the
-        client socket will also be closed
-        """
-        addr = None
+    def __handle_single_message(self, client_sock, message, addr):
+        """Handle a single message from a client"""
         try:
-            addr = client_sock.getpeername()
-            
-            message = receive_message(client_sock)
-            if not message:
-                logging.error(f"action: receive_message | result: fail | ip: {addr[0]} | error: Failed to receive message")
-                self.__send_error_response(client_sock, "Failed to receive message")
-                return
-            if message.type != BATCH and message.type != WINNERS_QUERY and message.type != FINISHED_NOTIFICATION:
-                logging.error(f"action: receive_message | result: fail | ip: {addr[0]} | error: Invalid message type")
-                self.__send_error_response(client_sock, "Invalid message type")
-                return
-
-            if message.type == WINNERS_QUERY:
-                self.__handle_winners_query(client_sock, message.data, addr)
-            elif message.type == BATCH:
+            if message.type == BATCH:
                 batch_data = message.data
                 self.__handle_batch_bets(client_sock, batch_data, addr)
             elif message.type == FINISHED_NOTIFICATION:
                 self.__handle_finished_notification(client_sock, message.data, addr)
+            elif message.type == WINNERS_QUERY:
+                self.__handle_winners_query(client_sock, message.data, addr)
+            else:
+                logging.error(f"action: handle_message | result: fail | ip: {addr[0]} | error: Invalid message type")
+                self.__send_error_response(client_sock, "Invalid message type")
+        except Exception as e:
+            logging.error(f"action: handle_single_message | result: fail | ip: {addr[0]} | error: {e}")
 
-        except OSError as e:
-            if addr:
-                logging.error(f"action: receive_message | result: fail | ip: {addr[0]} | error: {e}")
+    def __handle_winners_query(self, client_sock, query_data, addr):
+        """Handle a winners query from an agency"""
+        agency = query_data.agency
+        logging.info(f'action: receive_winners_query | result: success | ip: {addr[0]} | agency: {agency}')
+
+        try:
+            if self._lottery_completed:
+                winners = self.__get_winners_for_agency(agency)
+                
+                winners_response = WinnersResponse(winners)
+                response_message = Message(WINNERS_RESPONSE, winners_response)
+                
+                if not send_message(client_sock, response_message):
+                    logging.error(f"action: send_immediate_winners_response | result: fail | ip: {addr[0]} | agency: {agency}")
+                else:
+                    logging.info(f"action: send_immediate_winners_response | result: success | ip: {addr[0]} | agency: {agency} | winners_count: {len(winners)}")
             else:
-                logging.error(f"action: receive_message | result: fail | error: {e}")
-        finally:
-            if addr:
-                logging.info(f"action: closing_client_connection | result: success | ip: {addr[0]}")
-            else:
-                logging.info("action: closing_client_connection | result: success")
-            client_sock.close()
-            self._client_sockets.remove(client_sock)
+                self._pending_winner_queries.append((client_sock, query_data, addr))
+                logging.info(f"action: store_pending_query | result: success | ip: {addr[0]} | agency: {agency}")
+                
+        except Exception as e:
+            logging.error(f"action: handle_winners_query | result: fail | ip: {addr[0]} | agency: {agency} | error: {e}")
+            self.__send_error_response(client_sock, f"Failed to handle winners query: {e}")
+
+    def __send_winners_to_all_clients(self):
+        """Send winner responses to all clients that requested them"""
+        if not self._pending_winner_queries:
+            return
+            
+        logging.info(f"action: send_winners_to_all | result: success | pending_count: {len(self._pending_winner_queries)}")
+        
+        for client_sock, query_data, addr in self._pending_winner_queries:
+            try:
+                agency = query_data.agency
+                winners = self.__get_winners_for_agency(agency)
+                
+                winners_response = WinnersResponse(winners)
+                response_message = Message(WINNERS_RESPONSE, winners_response)
+                
+                if not send_message(client_sock, response_message):
+                    logging.error(f"action: send_winners_response | result: fail | ip: {addr[0]} | agency: {agency}")
+                else:
+                    logging.info(f"action: send_winners_response | result: success | ip: {addr[0]} | agency: {agency} | winners_count: {len(winners)}")
+                    
+            except Exception as e:
+                logging.error(f"action: send_winners_response | result: fail | ip: {addr[0]} | error: {e}")
+        
+        self._pending_winner_queries.clear()
 
     def __handle_batch_bets(self, client_sock, batch_data, addr):
         """Handle a batch of bets message"""
@@ -156,36 +209,6 @@ class Server:
         except Exception as e:
             logging.error(f"action: handle_finished_notification | result: fail | ip: {addr[0]} | agency: {agency} | error: {e}")
             self.__send_error_response(client_sock, f"Failed to handle finished notification: {e}")
-
-    def __handle_winners_query(self, client_sock, query_data, addr):
-        """Handle a winners query from an agency"""
-        agency = query_data.agency
-        logging.info(f'action: receive_winners_query | result: success | ip: {addr[0]} | agency: {agency}')        
-
-        try:
-            if not self._lottery_completed:
-                response = Response(success=False, message="Lottery not completed yet, please try again")
-                response_message = Message(RESPONSE, response)
-                
-                if not send_message(client_sock, response_message):
-                    logging.error(f"action: send_response | result: fail | ip: {addr[0]} | error: Failed to send response")
-                else:
-                    logging.info(f"action: send_response | result: success | ip: {addr[0]} | agency: {agency} | message: lottery_not_complete")
-                return
-            
-            winners = self.__get_winners_for_agency(agency)
-            
-            winners_response = WinnersResponse(winners)
-            response_message = Message(WINNERS_RESPONSE, winners_response)
-            
-            if not send_message(client_sock, response_message):
-                logging.error(f"action: send_winners_response | result: fail | ip: {addr[0]} | error: Failed to send winners response")
-            else:
-                logging.info(f"action: send_winners_response | result: success | ip: {addr[0]} | agency: {agency} | winners_count: {len(winners)}")
-            
-        except Exception as e:
-            logging.error(f"action: handle_winners_query | result: fail | ip: {addr[0]} | agency: {agency} | error: {e}")
-            self.__send_error_response(client_sock, f"Failed to handle winners query: {e}")
 
     def __perform_lottery(self):
         """Perform the lottery when all agencies have finished"""

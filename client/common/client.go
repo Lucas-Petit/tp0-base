@@ -60,7 +60,7 @@ func (c *Client) createClientSocket() error {
 	return nil
 }
 
-// StartClientLoop loops sending bets by reading CSV file in batches
+// StartClientLoop loops sending bets by reading CSV file in batches with persistent connection
 func (c *Client) StartClientLoop(sigChan <-chan os.Signal) {
 	csvPath := fmt.Sprintf("/data/agency-%s.csv", c.config.ID)
 	
@@ -71,6 +71,23 @@ func (c *Client) StartClientLoop(sigChan <-chan os.Signal) {
 	}
 	defer file.Close()
 
+	// Create persistent connection at the start
+	if err := c.createClientSocket(); err != nil {
+		log.Errorf("action: create_persistent_connection | result: fail | client_id: %v | error: %v", c.config.ID, err)
+		return
+	}
+	
+	log.Infof("action: create_persistent_connection | result: success | client_id: %v", c.config.ID)
+	
+	// Ensure connection is closed when function exits
+	defer func() {
+		if c.conn != nil {
+			log.Infof("action: closing_persistent_connection | result: success | client_id: %v", c.config.ID)
+			c.conn.Close()
+			c.conn = nil
+		}
+	}()
+
 	scanner := bufio.NewScanner(file)
 	batchNumber := 0
 	lineNumber := 0
@@ -78,6 +95,7 @@ func (c *Client) StartClientLoop(sigChan <-chan os.Signal) {
 	log.Infof("action: start_batch_processing | result: success | client_id: %v | batch_size: %d", 
 		c.config.ID, c.config.BatchMaxAmount)
 
+	// Phase 1: Send all batches
 	for {
 		select {
 		case sig := <-sigChan:
@@ -89,7 +107,7 @@ func (c *Client) StartClientLoop(sigChan <-chan os.Signal) {
 
 		batch := c.readNextBatch(scanner, &lineNumber)
 		if len(batch) == 0 {
-			break
+			break // End of file - move to next phase
 		}
 
 		batchNumber++
@@ -97,36 +115,19 @@ func (c *Client) StartClientLoop(sigChan <-chan os.Signal) {
 		log.Infof("action: preparing_batch | result: success | client_id: %v | batch_number: %d | batch_size: %d", 
 			c.config.ID, batchNumber, len(batch))
 
-		if err := c.createClientSocket(); err != nil {
-			log.Errorf("action: create_connection | result: fail | client_id: %v | error: %v", c.config.ID, err)
-			return
-		}
-
 		if err := c.sendBatch(batch); err != nil {
 			log.Errorf("action: send_batch | result: fail | client_id: %v | batch_number: %d | error: %v", c.config.ID, batchNumber, err)
-			c.conn.Close()
-			c.conn = nil
 			return
-		}
-
-		log.Infof("action: closing_connection | result: success | client_id: %v | batch_number: %d", c.config.ID, batchNumber)
-		c.conn.Close()
-		c.conn = nil
-
-		select {
-		case sig := <-sigChan:
-			log.Infof("action: signal_received | result: success | signal: %v | client_id: %v | msg: Graceful shutdown during sleep", sig, c.config.ID)
-			log.Infof("action: client_shutdown_completed | result: success | client_id: %v", c.config.ID)
-			return
-		case <-time.After(c.config.LoopPeriod):
 		}
 	}
 
+	// Phase 2: Send finished notification using same connection
 	if err := c.notifyFinished(); err != nil {
 		log.Errorf("action: notify_finished | result: fail | client_id: %v | error: %v", c.config.ID, err)
 		return
 	}
 
+	// Phase 3: Query winners with retry logic using same connection
 	if err := c.queryWinners(); err != nil {
 		log.Errorf("action: query_winners | result: fail | client_id: %v | error: %v", c.config.ID, err)
 		return
@@ -215,12 +216,6 @@ func (c *Client) sendBatch(batch []Bet) error {
 
 // notifyFinished sends a finished notification to the server
 func (c *Client) notifyFinished() error {
-	conn, err := net.Dial("tcp", c.config.ServerAddress)
-	if err != nil {
-		return fmt.Errorf("failed to connect: %v", err)
-	}
-	defer conn.Close()
-
 	finishedNotification := FinishedNotification{
 		Agency: c.config.ID,
 	}
@@ -232,11 +227,11 @@ func (c *Client) notifyFinished() error {
 	
 	log.Infof("action: notify_finished | result: success | client_id: %v", c.config.ID)
 
-	if err := SendMessage(conn, message); err != nil {
+	if err := SendMessage(c.conn, message); err != nil {
 		return fmt.Errorf("failed to send finished notification: %v", err)
 	}
 
-	response, err := ReceiveMessage(conn)
+	response, err := ReceiveMessage(c.conn)
 	if err != nil {
 		return fmt.Errorf("failed to receive response: %v", err)
 	}
@@ -260,70 +255,31 @@ func (c *Client) notifyFinished() error {
 
 // queryWinners queries the server for winners of this agency
 func (c *Client) queryWinners() error {
-	maxRetries := 3
-	retryDelay := time.Second * 2
+	log.Infof("action: query_winners | result: in_progress | client_id: %s", c.config.ID)
 
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		log.Infof("action: query_winners | result: in_progress | client_id: %s | attempt: %d", c.config.ID, attempt)
+	query := WinnersQuery{Agency: c.config.ID}
+	message := Message{Type: WINNERS_QUERY, Data: query}
 
-		conn, err := net.Dial("tcp", c.config.ServerAddress)
-		if err != nil {
-			if attempt < maxRetries {
-				time.Sleep(retryDelay)
-				continue
-			}
-			log.Errorf("action: query_winners | result: fail | client_id: %s | error: failed to connect: %v", c.config.ID, err)
-			return err
-		}
-		defer conn.Close()
-
-		query := WinnersQuery{Agency: c.config.ID}
-		message := Message{Type: WINNERS_QUERY, Data: query}
-
-		if err := SendMessage(conn, message); err != nil {
-			if attempt < maxRetries {
-				time.Sleep(retryDelay)
-				continue
-			}
-			log.Errorf("action: query_winners | result: fail | client_id: %s | error: failed to send query: %v", c.config.ID, err)
-			return err
-		}
-
-		response, err := ReceiveMessage(conn)
-		if err != nil {
-			if attempt < maxRetries {
-				time.Sleep(retryDelay)
-				continue
-			}
-			log.Errorf("action: query_winners | result: fail | client_id: %s | error: failed to receive response: %v", c.config.ID, err)
-			return err
-		}
-
-		if response.Type == WINNERS_RESPONSE {
-			winnersResponse := response.Data.(*WinnersResponse)
-			winnerCount := len(winnersResponse.Winners)
-
-			log.Infof("action: consulta_ganadores | result: success | cant_ganadores: %d", winnerCount)
-			return nil
-		} else if response.Type == RESPONSE {
-			responseData := response.Data.(*Response)
-			if !responseData.Success {
-				if attempt < maxRetries {
-					time.Sleep(retryDelay)
-					continue
-				}
-				log.Infof("action: query_winners | result: fail | client_id: %s | message: %s", c.config.ID, responseData.Message)
-				return fmt.Errorf("lottery not completed: %s", responseData.Message)
-			}
-		}
-
-		if attempt < maxRetries {
-			time.Sleep(retryDelay)
-			continue
-		}
-		log.Errorf("action: query_winners | result: fail | client_id: %s | error: unexpected response type", c.config.ID)
-		return fmt.Errorf("unexpected response type")
+	if err := SendMessage(c.conn, message); err != nil {
+		log.Errorf("action: query_winners | result: fail | client_id: %s | error: failed to send query: %v", c.config.ID, err)
+		return err
 	}
 
-	return fmt.Errorf("failed to query winners after %d attempts", maxRetries)
+	// Wait for the server to send the winners response when lottery is ready
+	response, err := ReceiveMessage(c.conn)
+	if err != nil {
+		log.Errorf("action: query_winners | result: fail | client_id: %s | error: failed to receive response: %v", c.config.ID, err)
+		return err
+	}
+
+	if response.Type == WINNERS_RESPONSE {
+		winnersResponse := response.Data.(*WinnersResponse)
+		winnerCount := len(winnersResponse.Winners)
+
+		log.Infof("action: consulta_ganadores | result: success | cant_ganadores: %d", winnerCount)
+		return nil
+	} else {
+		log.Errorf("action: query_winners | result: fail | client_id: %s | error: unexpected response type: %s", c.config.ID, response.Type)
+		return fmt.Errorf("unexpected response type: %s", response.Type)
+	}
 }
