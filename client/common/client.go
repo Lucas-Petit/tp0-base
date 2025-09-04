@@ -84,14 +84,12 @@ func (c *Client) StartClientLoop(sigChan <-chan os.Signal) {
 	}()
 
 	for i := 0; i < c.config.LoopAmount; i++ {
-		// Check if SIGTERM was received
 		select {
 		case sig := <-sigChan:
 			log.Infof("action: signal_received | result: success | signal: %v | client_id: %v | msg: Starting graceful shutdown", sig, c.config.ID)
 			log.Infof("action: client_shutdown_completed | result: success | client_id: %v", c.config.ID)
 			return
 		default:
-			// Continue with normal operation
 		}
 
 		c.sendSingleBet()
@@ -103,7 +101,6 @@ func (c *Client) StartClientLoop(sigChan <-chan os.Signal) {
 				log.Infof("action: client_shutdown_completed | result: success | client_id: %v", c.config.ID)
 				return
 			case <-time.After(c.config.LoopPeriod):
-				// Continue to next iteration
 			}
 		}
 	}
