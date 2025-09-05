@@ -1,3 +1,10 @@
+### Correcciones realizadas
+- Se revisa que la lectura total de bytes sea la correcta para el tamaño del mensaje (ReceiveMessage de protocol.go).
+- store_bets se realiza tomando control del lock.
+- Se guardan solamente las apuestas ganadoras en memoria sin cargarlas todas a la vez.
+- La salida del server se encarga de cerrar los threads colgados de los clientes.
+
+
 # TP0: Docker + Comunicaciones + Concurrencia
 
 En el presente repositorio se provee un esqueleto básico de cliente/servidor, en donde todas las dependencias del mismo se encuentran encapsuladas en containers. Los alumnos deberán resolver una guía de ejercicios incrementales, teniendo en cuenta las condiciones de entrega descritas al final de este enunciado.

@@ -163,44 +163,56 @@ func SendMessage(conn net.Conn, msg Message) error {
 }
 
 func ReceiveMessage(conn net.Conn) (*Message, error) {
-	typeBytes := make([]byte, 1)
-	_, err := io.ReadFull(conn, typeBytes)
-	if err != nil {
-		if err == io.EOF {
-			return nil, fmt.Errorf("connection closed")
-		}
-		return nil, fmt.Errorf("failed to read message type: %v", err)
-	}
-	
-	messageType := int(typeBytes[0])
-	
-	lengthBytes := make([]byte, 4)
-	_, err = io.ReadFull(conn, lengthBytes)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read length: %v", err)
-	}
-	
-	dataLength := bytesToInt(lengthBytes)
-	
-	payload := make([]byte, dataLength)
-	_, err = io.ReadFull(conn, payload)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read payload: %v", err)
-	}
-	
-	if messageType == RESPONSE {
-		data, err := DeserializeResponse(payload)
-		if err != nil {
-			return nil, fmt.Errorf("failed to deserialize response: %v", err)
-		}
-		return &Message{Type: messageType, Data: data}, nil
-	} else if messageType == WINNERS_RESPONSE {
-		data, err := DeserializeWinnersResponse(payload)
-		if err != nil {
-			return nil, fmt.Errorf("failed to deserialize winners response: %v", err)
-		}
-		return &Message{Type: messageType, Data: data}, nil
-	}
+    typeBytes := make([]byte, 1)
+    totalRead := 0
+    for totalRead < 1 {
+        n, err := conn.Read(typeBytes[totalRead:])
+        if err != nil {
+            if err == io.EOF {
+                return nil, fmt.Errorf("connection closed")
+            }
+            return nil, fmt.Errorf("failed to read message type: %v", err)
+        }
+        totalRead += n
+    }
+    
+    messageType := int(typeBytes[0])
+    
+    lengthBytes := make([]byte, 4)
+    totalRead = 0
+    for totalRead < 4 {
+        n, err := conn.Read(lengthBytes[totalRead:])
+        if err != nil {
+            return nil, fmt.Errorf("failed to read length: %v", err)
+        }
+        totalRead += n
+    }
+    
+    dataLength := bytesToInt(lengthBytes)
+    
+    payload := make([]byte, dataLength)
+    totalRead = 0
+    for totalRead < dataLength {
+        n, err := conn.Read(payload[totalRead:])
+        if err != nil {
+            return nil, fmt.Errorf("failed to read payload: %v", err)
+        }
+        totalRead += n
+    }
+    
+    if messageType == RESPONSE {
+        data, err := DeserializeResponse(payload)
+        if err != nil {
+            return nil, fmt.Errorf("failed to deserialize response: %v", err)
+        }
+        return &Message{Type: messageType, Data: data}, nil
+    } else if messageType == WINNERS_RESPONSE {
+        data, err := DeserializeWinnersResponse(payload)
+        if err != nil {
+            return nil, fmt.Errorf("failed to deserialize winners response: %v", err)
+        }
+        return &Message{Type: messageType, Data: data}, nil
+    }
 
-	return nil, fmt.Errorf("unexpected message type: %d", messageType)
+    return nil, fmt.Errorf("unexpected message type: %d", messageType)
 }

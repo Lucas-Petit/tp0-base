@@ -43,7 +43,7 @@ class Server:
 
     def run(self):
         """
-        Server main loop: accept all clients and spawn daemon threads to handle them
+        Server main loop: accept all clients and spawn threads to handle them
         """
         while True:
             try:
@@ -68,6 +68,7 @@ class Server:
                 
             except OSError as e:
                 logging.error(f"action: server_main_loop | result: fail | error: {e}")
+                self.stop()
                 break
     
     def stop(self):
@@ -78,6 +79,11 @@ class Server:
             sock.close()
         self._client_sockets = []
         self._server_socket.close()
+        for thread in self._client_threads:
+            thread.join(timeout=5.0)
+            if thread.is_alive():
+                logging.warning("action: thread_join_timeout | result: fail | msg: Thread did not terminate in time")
+        self._client_threads = []
         logging.info("action: server_shutdown_finished | result: success | msg: Stopping server")
 
     def __handle_client_connection(self, client_sock):
@@ -232,10 +238,11 @@ class Server:
                     number=bet.number
                 )
                 bets.append(bet)
-            
-            store_bets(bets)
-            logging.info(f"action: apuesta_recibida | result: success | cantidad: {bet_count}")
-            
+
+            with self._lock:
+                store_bets(bets)
+                logging.info(f"action: apuesta_recibida | result: success | cantidad: {bet_count}")
+
             response = Response(success=True, message=f"Batch of {bet_count} bets stored successfully")
             response_message = Message(RESPONSE, response)
             
@@ -276,8 +283,9 @@ class Server:
     def __perform_lottery(self):
         """Perform the lottery when all agencies have finished"""
         try:
-            logging.info("action: sorteo | result: success")
-            self._all_bets = list(load_bets())
+            self._all_bets = [bet for bet in load_bets() if has_won(bet)]
+            
+            logging.info(f"action: sorteo | result: success | total_winners: {len(self._all_bets)}")
 
         except Exception as e:
             logging.error(f"action: sorteo | result: fail | error: {e}")
@@ -292,7 +300,7 @@ class Server:
 
             agency_int = int(agency)
             for bet in self._all_bets:
-                if bet.agency == agency_int and has_won(bet):
+                if bet.agency == agency_int:
                     winners.append(bet.document)
             
             logging.info(f"action: get_winners_for_agency | result: success | agency: {agency} | winners_found: {len(winners)}")
